@@ -11,6 +11,7 @@ import SwiftUI
 ///   *completion*, never on a timer guess — so model and motion cannot
 ///   drift out of sync.
 struct SwipeDeckView: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var viewModel: DeckViewModel
 
     /// Live translation of the card being dragged. Keyed to a specific
@@ -46,6 +47,7 @@ struct SwipeDeckView: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 24)
         .background(Color(.systemBackground))
+        .toolbar(.hidden, for: .navigationBar)
         .task { await viewModel.loadDeck() }
         .sensoryFeedback(.selection, trigger: isPastThreshold)
         .sensoryFeedback(.impact(weight: .light), trigger: viewModel.completedCount)
@@ -56,9 +58,17 @@ struct SwipeDeckView: View {
 
     private var header: some View {
         VStack(spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Huddle")
-                    .font(.system(.title2, design: .rounded, weight: .heavy))
+            HStack(alignment: .center) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                }
+                .accessibilityLabel("Close")
                 Spacer()
                 if viewModel.phase == .swiping {
                     Text("\(min(viewModel.completedCount + 1, viewModel.totalCount)) / \(viewModel.totalCount)")

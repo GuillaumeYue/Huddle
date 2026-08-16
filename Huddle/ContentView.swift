@@ -9,7 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        SwipeDeckView(provider: MockRestaurantProvider())
+        HomeView()
     }
 }
 
