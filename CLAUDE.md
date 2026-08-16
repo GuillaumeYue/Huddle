@@ -38,8 +38,14 @@ Full design lives in `huddle-project-brief.md`. Summary:
 - REVEALING is **server-driven** (the server "directs" the reveal pacing) and **input-closed** (no swipes accepted).
 
 **Decision rule (v1):** full consensus — a candidate matches only when *everyone present* said yes. "Majority" is a future room setting, not v1.
+- *Implementation note:* the engine tallies votes against a **threshold**, where v1 sets `threshold == participantCount`. Consensus is a configured value, not a hard-coded branch — this keeps the v2 "majority" setting a parameter change rather than a rewrite, and makes the tally an atomic-counter problem (which is the concurrency lab we want).
+- **Open, unresolved:** the definition of "present". Roster changes mid-session (disconnect / rejoin / late join) while settlement must stay exactly-once. Must be decided before any tally code is written. Leading candidate: freeze a roster snapshot with an epoch at ACTIVE entry; disconnects affect the timeout, not the denominator.
 
-**Gebase invariants (never break):**
+**Identity (locked):** **everyone registers — no guest mode.** Joining a room requires an account; `Participant.userId` is non-optional. Auth is **Sign in with Apple** (one tap + Face ID) so the friction stays near-guest while identity stays stable for reconnect, session history, and recommendation phase 3. Rationale: guest→account merging is a notoriously dirty migration, and it buys ~3 seconds.
+
+**Room access (locked):** the **join code is the credential**, and **LOBBY is the approval gate** (host sees who joined, can kick, then starts). No social graph is required to enter a room — see the v2+ list.
+
+**Codebase invariants (never break):**
 1. **Engine never knows the content.** It works with `Candidate` (title + opaque `metadata`) only. Domain specifics (cuisine, price…) live inside a `CandidateProvider`. Never write `candidate.cuisine` in the engine.
 2. **Server is the source of truth.** Clients are projectors of authoritative state (Redis while live, Postgres once resolved).
 3. **Realtime events carry an extensible `type`** so location / preset-phrases / etc. slot in as "just another event type."
@@ -57,10 +63,18 @@ Full design lives in `huddle-project-brief.md`. Summary:
 - **In (v1):** auth; rooms + join code; shared deck; realtime swiping; match detection; group recommendation (phases 1–2); session history. Preset quick-phrases are OK (broadcast-only, no storage).
 - **Out:** payments, web client, free-text chat, voice/video, reservations/booking, DMs, ML infra.
 
+**v2+ parking lot (do not build):**
+- Friend graph / social layer. The recurring need behind it — "re-invite the people I always eat with" — is derivable from **session history** (phase 7) with no graph to model. Revisit only if history proves insufficient.
+- Majority / configurable decision threshold as a room setting.
+- Live location, preset-phrase persistence, voice chat (v3+, WebRTC P2P).
+
 ## Current state
 
-- Design is **locked** (the "brain" is done). iOS domain scaffold already created: `RoomState`, `Candidate`, `Room`, `Participant`, `CandidateProvider` (+ `MockRestaurantProvider`). Plain Codable, zero dependencies.
-- Xcode project being created now (iOS App, SwiftUI, **Storage: None** — SwiftData added deliberately later).
+- Design is **locked** (the "brain" is done).
+- Git repo initialized; first commit is the bare Xcode scaffold. Every concurrency lab's **broken version gets its own commit** before the fix — that history is a deliverable, not an accident.
+- Xcode project exists (iOS App, SwiftUI, **Storage: None** — SwiftData added deliberately later). Contents so far: `HuddleApp.swift`, `ContentView.swift`, nothing else.
+- **iOS domain scaffold does NOT exist yet** — `RoomState`, `Candidate`, `Room`, `Participant`, `CandidateProvider`, `MockRestaurantProvider` are all still to be written. This is the next step.
+- `huddle-project-brief.md` is referenced above but **does not exist in the repo**. Until it does, this file is the design of record.
 - Backend not started (deferred by Alex).
 
 ## Build phases — one at a time, do not jump ahead
