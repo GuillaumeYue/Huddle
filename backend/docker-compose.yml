@@ -1,0 +1,23 @@
+# Local dev infrastructure. Requires Docker (OrbStack / Docker Desktop).
+#
+# Phase 2: Postgres only. Redis deliberately arrives with phase 3
+# (realtime) — no premature infrastructure.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: huddle
+      POSTGRES_PASSWORD: huddle_dev # local dev only, never a real secret
+      POSTGRES_DB: huddle
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huddle -d huddle"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

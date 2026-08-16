@@ -28,7 +28,8 @@ Full design lives in `huddle-project-brief.md`. Summary:
 
 **Tech stack**
 - iOS: Swift 6 (strict concurrency), SwiftUI + NavigationStack, `@Observable` (MVVM), SwiftData for the local history/cache layer (**added later, not now**), `URLSessionWebSocketTask` for realtime, Swift Testing, SPM.
-- Backend (**not started yet**): Node + Express (REST) + `ws` (realtime); PostgreSQL (durable store); Redis (live session state + pub/sub + atomic counters + job queue); a separate worker process; Docker + docker-compose. Deploy on Railway/Fly.
+- Backend: **TypeScript** (locked — wire types mirror HuddleCore's, checked at compile time on both ends) + Node + Express (REST) + `ws` (realtime); PostgreSQL (durable store); Redis (live session state + pub/sub + atomic counters + job queue — **arrives with phase 3, not before**); a separate worker process; Docker + docker-compose. Deploy on Railway/Fly.
+- **Monorepo (locked):** backend lives in `backend/` in this repo. Protocol changes land in one commit touching both Swift and TS. Split later only if team/deploy cadence demands it.
 
 **State machine** — every state has a guaranteed exit; no dead ends.
 `LOBBY → ACTIVE → TALLY → REVEALING → MATCHED | NO_RESULT`. Host may end anytime.
@@ -70,12 +71,12 @@ Full design lives in `huddle-project-brief.md`. Summary:
 
 ## Current state
 
-- Design is **locked** (the "brain" is done).
-- Git repo initialized; first commit is the bare Xcode scaffold. Every concurrency lab's **broken version gets its own commit** before the fix — that history is a deliverable, not an accident.
-- Xcode project exists (iOS App, SwiftUI, **Storage: None** — SwiftData added deliberately later). Contents so far: `HuddleApp.swift`, `ContentView.swift`, nothing else.
-- **iOS domain scaffold does NOT exist yet** — `RoomState`, `Candidate`, `Room`, `Participant`, `CandidateProvider`, `MockRestaurantProvider` are all still to be written. This is the next step.
+- **Phase 1 complete.** HuddleCore local SPM package (engine: `RoomState` w/ exhaustive transition-table tests, `Room` with private-set state + throwing `transition(to:)`, `Candidate`, `Participant`, `SwipeDecision`, `CandidateProvider`); app shell (`HomeView` → pushed `SwipeDeckView`), hand-rolled swipe physics, mesh-gradient cards, `MockRestaurantProvider` on the app side of the wall.
+- First naive-then-fix artifact is in history: ghost-card flash (state bound to role instead of identity) — broken in `58133aa`, fixed in `60fd631`.
+- Remote: `git@github.com:GuillaumeYue/Huddle.git`.
 - `huddle-project-brief.md` is referenced above but **does not exist in the repo**. Until it does, this file is the design of record.
-- Backend not started (deferred by Alex).
+- **Phase 2 in progress**: `backend/` scaffold (TS + Express + /health). Docker not yet installed on Alex's machine — Postgres wiring blocked on that.
+- Known env quirk: `xcode-select` points at CommandLineTools; builds/tests need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` prefix until Alex runs the sudo fix.
 
 ## Build phases — one at a time, do not jump ahead
 

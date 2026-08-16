@@ -30,3 +30,8 @@ playground.xcworkspace
 Secrets.xcconfig
 *.env
 .env.local
+
+# Node (backend/)
+node_modules/
+dist/
+.env
