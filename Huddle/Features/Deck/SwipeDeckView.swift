@@ -13,8 +13,14 @@ import SwiftUI
 struct SwipeDeckView: View {
     @State private var viewModel: DeckViewModel
 
-    /// Live translation of the top card while dragging.
+    /// Live translation of the card being dragged. Keyed to a specific
+    /// card via `draggedID`, never to "whoever is on top": roles change
+    /// hands mid-animation (the next card is promoted while the old one's
+    /// offset is still live), and a promoted card must not inherit its
+    /// predecessor's offset. Binding state to identity instead of role is
+    /// what makes the ghost-card glitch unrepresentable.
     @State private var drag: CGSize = .zero
+    @State private var draggedID: Candidate.ID?
     /// True while a card is flying off; gates gestures and buttons so a
     /// fast second input cannot double-commit.
     @State private var isAnimatingOut = false
@@ -111,34 +117,43 @@ struct SwipeDeckView: View {
             ForEach(Array(viewModel.stack.prefix(3).enumerated()).reversed(),
                     id: \.element.id) { depth, candidate in
                 let isTop = depth == 0
+                // Identity, not role: only the card that owns the drag
+                // wears the offset/rotation/badges. A card promoted to the
+                // top mid-animation can never inherit stale drag state.
+                let isDragged = candidate.id == draggedID
                 CardView(candidate: candidate)
-                    .overlay { if isTop { verdictBadges } }
+                    .overlay { if isDragged { verdictBadges } }
                     // Depth stagger: each card behind shrinks and sinks a
-                    // touch. When the top card pops, depth changes and the
-                    // spring on `stack` promotes the next card upward.
+                    // touch. Promotion animates via the withAnimation
+                    // wrapping commit() — the single animation authority.
                     .scaleEffect(isTop ? 1 : 1 - 0.045 * CGFloat(depth))
                     .offset(y: isTop ? 0 : CGFloat(depth) * 14)
-                    .offset(isTop ? drag : .zero)
+                    .offset(isDragged ? drag : .zero)
                     // Pendulum feel: rotate around the bottom edge, driven
                     // by horizontal travel only.
                     .rotationEffect(
-                        .degrees(isTop ? Double(drag.width / 22).clamped(to: -12...12) : 0),
+                        .degrees(isDragged ? Double(drag.width / 22).clamped(to: -12...12) : 0),
                         anchor: .bottom
                     )
-                    .gesture(isTop ? dragGesture : nil)
+                    // Removal is instant: the committed card is already
+                    // off-screen, and a default opacity fade would keep a
+                    // ghost copy alive for the length of the promotion
+                    // spring. Insertion fades in at the back of the stack.
+                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                    .gesture(isTop ? dragGesture(for: candidate) : nil)
                     .allowsHitTesting(isTop && !isAnimatingOut)
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.stack)
         .padding(.vertical, 8)
     }
 
     // MARK: Drag physics
 
-    private var dragGesture: some Gesture {
+    private func dragGesture(for candidate: Candidate) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 guard !isAnimatingOut else { return }
+                draggedID = candidate.id
                 drag = value.translation
                 isPastThreshold = abs(value.translation.width) > commitThreshold
             }
@@ -156,9 +171,13 @@ struct SwipeDeckView: View {
                     performSwipe(decisive > 0 ? .yes : .no)
                 } else {
                     // Snap back with a lively spring — the "no" that
-                    // still feels good.
+                    // still feels good. draggedID is released only when
+                    // the spring lands, so the offset stays owned while
+                    // it is still animating home.
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.65)) {
                         drag = .zero
+                    } completion: {
+                        draggedID = nil
                     }
                     isPastThreshold = false
                 }
@@ -170,6 +189,9 @@ struct SwipeDeckView: View {
     private func performSwipe(_ decision: SwipeDecision) {
         guard let top = viewModel.stack.first, !isAnimatingOut else { return }
         isAnimatingOut = true
+        // Button-initiated swipes never started a drag, so the top card
+        // adopts the offset ownership here before any motion begins.
+        draggedID = top.id
         let direction: CGFloat = decision == .yes ? 1 : -1
 
         withAnimation(.easeOut(duration: 0.3)) {
@@ -182,10 +204,18 @@ struct SwipeDeckView: View {
         } completion: {
             // Mutate the model only now: the card is off-screen, so the
             // pop + promotion spring can't visually fight the fly-off.
+            //
+            // Render-order note: commit and the drag reset below may land
+            // in different transactions — there is no single-frame
+            // guarantee. That is exactly why the offset is keyed to
+            // draggedID: even if a frame renders between these mutations,
+            // the promoted card doesn't match draggedID and renders in
+            // place, not wearing this card's stale off-screen offset.
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                 viewModel.commit(decision, for: top)
             }
             drag = .zero
+            draggedID = nil
             isPastThreshold = false
             isAnimatingOut = false
         }
