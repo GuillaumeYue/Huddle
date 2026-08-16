@@ -57,6 +57,8 @@ Full design lives in `huddle-project-brief.md`. Summary:
 - iOS: actor-isolated local store / socket-event serialization; optimistic swipe + reconcile.
 - The inactivity timer becomes a **distributed timer** once multi-node — only one node may fire it.
 
+**Candidates (phase 5, decided early):** target market is **Montreal** → **Google Places API** is the sole data source (no Amap / dual-provider routing). Provider runs **server-side only** (shared single-generation deck, API key never ships in the client, geo-grid + category cache in Redis with TTL). Montreal notes: pass `languageCode` (fr/en) per user locale — titles are locale-dependent; photos are a separately billed second request; set a budget alert in the Google console before first real calls.
+
 **Recommendation (explainable, phased):** Phase 1 content-based (tag overlap) → Phase 2 group aggregation (implement **both** average and least-misery, discuss the fairness trade-off) → Phase 3 learn from outcomes. Runs in the worker, cached in Redis, **never** computed inline in the request/realtime path.
 
 ## Scope
