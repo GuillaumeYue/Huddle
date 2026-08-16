@@ -1,5 +1,7 @@
 import express from "express";
 import { isDatabaseUp } from "./db.js";
+import { devRouter } from "./dev.js";
+import { roomsRouter } from "./rooms.js";
 
 /**
  * The Express app, separated from the listening socket (src/index.ts).
@@ -23,6 +25,20 @@ export function createApp(): express.Express {
       uptimeSeconds: Math.round(process.uptime()),
     });
   });
+
+  app.use(roomsRouter);
+  app.use(devRouter);
+
+  // Terminal error boundary: anything a route throws (or rejects with,
+  // Express 5 forwards async rejections here) becomes a clean 500 instead
+  // of a hung request. Log the cause, never leak it to the client.
+  app.use(
+    (err: unknown, _req: express.Request, res: express.Response,
+     _next: express.NextFunction) => {
+      console.error("[error]", err);
+      res.status(500).json({ error: "internal error" });
+    },
+  );
 
   return app;
 }
