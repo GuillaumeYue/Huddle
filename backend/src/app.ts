@@ -1,4 +1,5 @@
 import express from "express";
+import { isDatabaseUp } from "./db.js";
 
 /**
  * The Express app, separated from the listening socket (src/index.ts).
@@ -11,11 +12,15 @@ export function createApp(): express.Express {
   const app = express();
   app.use(express.json());
 
-  app.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
+  app.get("/health", async (_req, res) => {
+    const dbUp = await isDatabaseUp();
+    // 503 when a dependency is down: deploy platforms and load balancers
+    // read the status code, not the body. "ok with a sad body" would keep
+    // routing traffic to an instance that can't serve it.
+    res.status(dbUp ? 200 : 503).json({
+      status: dbUp ? "ok" : "degraded",
+      db: dbUp ? "up" : "down",
       uptimeSeconds: Math.round(process.uptime()),
-      // db: reported here once Postgres is wired up (blocked on Docker).
     });
   });
 
