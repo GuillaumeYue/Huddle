@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BCA0C3DB3031580300FC197B /* HuddleCore in Frameworks */ = {isa = PBXBuildFile; productRef = BCA0C3DC3031580300FC197B /* HuddleCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BCA0C3BA3031482900FC197B /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BCA0C3DB3031580300FC197B /* HuddleCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = Huddle;
 			packageProductDependencies = (
+				BCA0C3DC3031580300FC197B /* HuddleCore */,
 			);
 			productName = Huddle;
 			productReference = BCA0C3AC3031482800FC197B /* Huddle.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = BCA0C3A33031482800FC197B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BCA0C3DA3031580300FC197B /* XCLocalSwiftPackageReference "HuddleCore" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BCA0C3AD3031482800FC197B /* Products */;
 			projectDirPath = "";
@@ -578,6 +587,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		BCA0C3DA3031580300FC197B /* XCLocalSwiftPackageReference "HuddleCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = HuddleCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BCA0C3DC3031580300FC197B /* HuddleCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HuddleCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BCA0C3A43031482800FC197B /* Project object */;
 }
