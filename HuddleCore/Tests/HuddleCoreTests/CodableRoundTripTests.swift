@@ -51,4 +51,13 @@ struct CodableRoundTripTests {
             RoomState.self, from: JSONEncoder().encode(state))
         #expect(decoded == state)
     }
+
+    @Test("SwipeDecision uses YES/NO wire strings",
+          arguments: SwipeDecision.allCases)
+    func swipeDecisionWireFormat(decision: SwipeDecision) throws {
+        let decoded = try JSONDecoder().decode(
+            SwipeDecision.self, from: JSONEncoder().encode(decision))
+        #expect(decoded == decision)
+        #expect(decision.rawValue == decision.rawValue.uppercased())
+    }
 }
