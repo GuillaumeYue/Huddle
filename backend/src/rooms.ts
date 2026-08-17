@@ -26,6 +26,10 @@ interface ParticipantRow {
 
 const UNIQUE_VIOLATION = "23505";
 
+/** Reject junk before it reaches pg as a 22P02 cast error → 500. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (s: string): boolean => UUID_RE.test(s);
+
 /** Wire shape for a room, camelCased at the boundary. */
 async function roomPayload(room: RoomRow) {
   const { rows: participants } = await pool.query<ParticipantRow>(
@@ -141,8 +145,151 @@ roomsRouter.post("/rooms/join", async (req, res) => {
   res.json(await roomPayload(room));
 });
 
+/**
+ * Host starts the room: LOBBY → ACTIVE.
+ *
+ * The interesting move: authorization (host_id) and the state
+ * precondition (state = 'LOBBY') live INSIDE the UPDATE's WHERE — one
+ * atomic conditional statement, Postgres's native CAS. A separate
+ * SELECT-check-then-UPDATE would be a read-modify-write race: the host
+ * double-taps on two devices, both checks pass, both updates run.
+ * Here the second one simply matches zero rows.
+ *
+ * Act first, diagnose only on failure: the follow-up SELECT exists to
+ * pick the right status code, not to make the decision.
+ */
+roomsRouter.post("/rooms/:id/start", async (req, res) => {
+  const roomId = req.params.id;
+  const userId: unknown = req.body?.userId;
+  if (typeof userId !== "string" || !isUuid(userId) || !isUuid(roomId)) {
+    res.status(400).json({ error: "valid roomId and userId are required" });
+    return;
+  }
+
+  const { rows } = await pool.query<RoomRow>(
+    `UPDATE rooms SET state = 'ACTIVE'
+      WHERE id = $1 AND host_id = $2 AND state = 'LOBBY'
+      RETURNING *`,
+    [roomId, userId],
+  );
+  const room = rows[0];
+  if (room) {
+    res.json(await roomPayload(room));
+    return;
+  }
+
+  const { rows: probe } = await pool.query<RoomRow>(
+    "SELECT * FROM rooms WHERE id = $1",
+    [roomId],
+  );
+  const existing = probe[0];
+  if (!existing) res.status(404).json({ error: "room not found" });
+  else if (existing.host_id !== userId)
+    res.status(403).json({ error: "only the host can start the room" });
+  else res.status(409).json({ error: `room is ${existing.state}, not LOBBY` });
+});
+
+/**
+ * Host removes a participant while still in LOBBY — the approval gate
+ * doing its job. Kicking someone who already left is a no-op (idempotent
+ * like join); kicking the host is refused.
+ */
+roomsRouter.post("/rooms/:id/kick", async (req, res) => {
+  const roomId = req.params.id;
+  const hostId: unknown = req.body?.hostId;
+  const targetUserId: unknown = req.body?.targetUserId;
+  if (
+    typeof hostId !== "string" || typeof targetUserId !== "string" ||
+    !isUuid(roomId) || !isUuid(hostId) || !isUuid(targetUserId)
+  ) {
+    res.status(400).json({ error: "valid roomId, hostId, targetUserId are required" });
+    return;
+  }
+  if (hostId === targetUserId) {
+    res.status(400).json({ error: "host cannot kick themselves (close the room instead)" });
+    return;
+  }
+
+  // Same CAS shape as /start: the host/LOBBY preconditions are part of
+  // the DELETE itself, via a subquery — no separate check to race with.
+  const { rowCount } = await pool.query(
+    `DELETE FROM room_participants
+      WHERE room_id = $1 AND user_id = $2
+        AND room_id IN (
+          SELECT id FROM rooms
+           WHERE id = $1 AND host_id = $3 AND state = 'LOBBY' AND closed_at IS NULL
+        )`,
+    [roomId, targetUserId, hostId],
+  );
+
+  const { rows } = await pool.query<RoomRow>(
+    "SELECT * FROM rooms WHERE id = $1",
+    [roomId],
+  );
+  const room = rows[0];
+  if (!room) {
+    res.status(404).json({ error: "room not found" });
+    return;
+  }
+  if (room.host_id !== hostId) {
+    res.status(403).json({ error: "only the host can kick" });
+    return;
+  }
+  if (room.state !== "LOBBY") {
+    res.status(409).json({ error: "room already started" });
+    return;
+  }
+  // rowCount 0 here just means the target was already gone — fine.
+  void rowCount;
+  res.json(await roomPayload(room));
+});
+
+/**
+ * Host ends the room at any time ("host may end anytime" — the
+ * guaranteed exit). Sets closed_at, which releases the join code (the
+ * partial unique index only guards live rooms). A room that already
+ * reached a terminal state keeps it; anything else resolves NO_RESULT.
+ */
+roomsRouter.post("/rooms/:id/close", async (req, res) => {
+  const roomId = req.params.id;
+  const userId: unknown = req.body?.userId;
+  if (typeof userId !== "string" || !isUuid(userId) || !isUuid(roomId)) {
+    res.status(400).json({ error: "valid roomId and userId are required" });
+    return;
+  }
+
+  const { rows } = await pool.query<RoomRow>(
+    `UPDATE rooms
+        SET closed_at = now(),
+            state = CASE WHEN state IN ('MATCHED', 'NO_RESULT')
+                         THEN state ELSE 'NO_RESULT' END
+      WHERE id = $1 AND host_id = $2 AND closed_at IS NULL
+      RETURNING *`,
+    [roomId, userId],
+  );
+  const room = rows[0];
+  if (room) {
+    res.json(await roomPayload(room));
+    return;
+  }
+
+  const { rows: probe } = await pool.query<RoomRow>(
+    "SELECT * FROM rooms WHERE id = $1",
+    [roomId],
+  );
+  const existing = probe[0];
+  if (!existing) res.status(404).json({ error: "room not found" });
+  else if (existing.host_id !== userId)
+    res.status(403).json({ error: "only the host can close the room" });
+  else res.json(await roomPayload(existing)); // already closed — idempotent
+});
+
 /** Poll a room (phase 2 stand-in for the phase-3 realtime push). */
 roomsRouter.get("/rooms/:id", async (req, res) => {
+  if (!isUuid(req.params.id)) {
+    res.status(404).json({ error: "room not found" });
+    return;
+  }
   const { rows } = await pool.query<RoomRow>(
     "SELECT * FROM rooms WHERE id = $1",
     [req.params.id],
