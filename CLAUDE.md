@@ -79,8 +79,9 @@ Full design lives in `huddle-project-brief.md`. Summary:
 - First naive-then-fix artifact is in history: ghost-card flash (state bound to role instead of identity) — broken in `58133aa`, fixed in `60fd631`.
 - Remote: `git@github.com:GuillaumeYue/Huddle.git`.
 - `huddle-project-brief.md` is referenced above but **does not exist in the repo**. Until it does, this file is the design of record.
-- **Phase 2 in progress**: `backend/` scaffold (TS + Express + /health). Docker not yet installed on Alex's machine — Postgres wiring blocked on that.
-- Known env quirk: `xcode-select` points at CommandLineTools; builds/tests need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` prefix until Alex runs the sudo fix.
+- **Phase 2 functionally complete, auth deferred (decided by Alex):** rooms + lifecycle (create/join/start/kick/close, judge-enforced codes, CAS-style conditional UPDATEs), TS state-machine mirror w/ mirrored tests, iOS wire integration (DTO layer separate from domain models — fork B; HuddleAPIClient; dev identity in UserDefaults; polling lobby). Verified live on two simulators. **SIWA + `DELETE /me` becomes a parallel track once the US$99 dev account is bought — when it lands, the account-deletion data semantics MUST be decided in the same step (App Review constraint), no further deferral.** Raw `pg` + hand-written SQL (fork decided; Drizzle declined for learning value at this scale).
+- **Phase 3 (realtime core) is next**: ws attach at index.ts layer, connection-as-identity, room event broadcast, replace lobby polling. Second naive-then-fix artifact is in history: invisible primary CTA from hierarchical `.primary` resolving against tinted control context (broken babd182^, fixed in babd182).
+- Known env quirk: `xcode-select` points at CommandLineTools; builds/tests need `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` prefix, and the simulator panel is unavailable, until Alex runs the sudo fix.
 
 ## Build phases — one at a time, do not jump ahead
 
