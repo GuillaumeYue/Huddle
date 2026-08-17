@@ -7,6 +7,9 @@ import SwiftUI
 /// solo deck. When rooms arrive, only the button's action changes — the
 /// navigation skeleton stays.
 struct HomeView: View {
+    /// Dev identity for the whole app; SIWA replaces its register path.
+    @State private var session = UserSession(api: HuddleAPIClient())
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -21,6 +24,7 @@ struct HomeView: View {
             .padding(.bottom, 24)
             .background(Color(.systemBackground))
         }
+        .environment(session)
     }
 
     // MARK: Decorative card fan
@@ -73,31 +77,26 @@ struct HomeView: View {
     private var actions: some View {
         VStack(spacing: 14) {
             NavigationLink {
-                SwipeDeckView(provider: MockRestaurantProvider())
+                RoomEntryView()
             } label: {
-                Text("Start swiping")
+                Text("Create or join a room")
                     .font(.system(.headline, design: .rounded))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(.primary, in: Capsule())
+                    .background(Color.primary, in: Capsule())
                     .foregroundStyle(Color(.systemBackground))
             }
 
-            Button {
-                // Unlocked in phase 2 (backend + auth + rooms).
+            NavigationLink {
+                SwipeDeckView(provider: MockRestaurantProvider())
             } label: {
-                Label("Create or join a room", systemImage: "lock.fill")
+                Text("Practice solo")
                     .font(.system(.headline, design: .rounded))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
                     .background(Color(.secondarySystemBackground), in: Capsule())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.primary)
             }
-            .disabled(true)
-
-            Text("Rooms unlock when the backend lands")
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(.tertiary)
         }
     }
 }

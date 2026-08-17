@@ -336,7 +336,7 @@ private struct FinishedView: View {
                     .font(.system(.headline, design: .rounded))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(.primary, in: Capsule())
+                    .background(Color.primary, in: Capsule())
                     .foregroundStyle(Color(.systemBackground))
             }
             .buttonStyle(PressableButtonStyle())
