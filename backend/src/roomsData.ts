@@ -25,6 +25,12 @@ export interface ParticipantRow {
   joined_at: string;
 }
 
+export interface CandidateRow {
+  candidate_id: string;
+  title: string;
+  metadata: Record<string, string>;
+}
+
 /** The wire shape of a room — mirror of iOS RoomDTO, field for field. */
 export interface RoomPayload {
   id: string;
@@ -35,6 +41,12 @@ export interface RoomPayload {
     userId: string;
     displayName: string;
     isHost: boolean;
+  }[];
+  /** The shared deck; present from ACTIVE onward, absent in LOBBY. */
+  candidates?: {
+    id: string;
+    title: string;
+    metadata: Record<string, string>;
   }[];
 }
 
@@ -52,7 +64,12 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
     // cast honest instead of silent.
     throw new Error(`row carries unknown state '${room.state}'`);
   }
-  return {
+  const { rows: candidates } = await pool.query<CandidateRow>(
+    `SELECT candidate_id, title, metadata
+       FROM room_candidates WHERE room_id = $1 ORDER BY position`,
+    [room.id],
+  );
+  const payload: RoomPayload = {
     id: room.id,
     joinCode: room.join_code,
     hostId: room.host_id,
@@ -63,6 +80,14 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
       isHost: p.user_id === room.host_id,
     })),
   };
+  if (candidates.length > 0) {
+    payload.candidates = candidates.map((c) => ({
+      id: c.candidate_id,
+      title: c.title,
+      metadata: c.metadata,
+    }));
+  }
+  return payload;
 }
 
 /** Fetch straight to wire shape by id (used by the broadcast path). */

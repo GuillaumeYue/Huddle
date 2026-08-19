@@ -18,6 +18,14 @@ struct RoomDTO: Decodable, Identifiable, Hashable {
     let hostId: String
     let state: RoomState
     let participants: [RoomParticipantDTO]
+    /// The shared deck; present from ACTIVE onward, absent in LOBBY.
+    let candidates: [CandidateDTO]?
+}
+
+struct CandidateDTO: Decodable, Identifiable, Hashable {
+    let id: String
+    let title: String
+    let metadata: [String: String]
 }
 
 struct RoomParticipantDTO: Decodable, Identifiable, Hashable {
@@ -51,6 +59,23 @@ struct LiveEventDTO: Decodable {
     let type: String
     let seq: Int
     let room: RoomDTO?
+    let progress: SwipeProgressDTO?
+}
+
+/// PROGRESS payload: how far one participant is through the deck.
+struct SwipeProgressDTO: Decodable {
+    let userId: String
+    let completed: Int
+    let deckSize: Int
+}
+
+/// Uplink: one verdict, sent over the room socket. The server's swipes
+/// primary key (room, round, user, candidate) makes resends no-ops, so
+/// this message may be sent at-least-once without double counting.
+struct SwipeEventDTO: Encodable {
+    var type = "SWIPE"
+    let candidateId: String
+    let decision: SwipeDecision
 }
 
 // MARK: Request bodies (the outbound half of the treaty)

@@ -1,16 +1,90 @@
+import HuddleCore
 import SwiftUI
 
-/// The approval gate, live. Shows the code to read out loud, the roster
-/// as the server sees it (pushed over the room socket), and host
-/// controls. When the server says ACTIVE, everyone here — host and
-/// guests alike — moves to the deck, because the *server* moved, not
-/// because a button did.
-struct LobbyView: View {
+/// One screen for the whole room session, morphing with server state:
+/// LOBBY shows the approval gate, ACTIVE shows the shared deck. The UI
+/// is a function of the authoritative room snapshot — no client-side
+/// navigation decides what phase we're in, the server does. This also
+/// keeps ONE .task (and therefore one socket) alive across the whole
+/// session; pushing the deck on top of the lobby would cancel the
+/// covered view's task and kill the connection mid-game.
+struct RoomSessionView: View {
     @Environment(\.dismiss) private var dismiss
-    @State var viewModel: LobbyViewModel
-    @State private var deckPresented = false
+    @State var viewModel: RoomSessionViewModel
 
     var body: some View {
+        Group {
+            if viewModel.isActive, let deck = viewModel.deck {
+                playStage(deck: deck)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            } else {
+                lobbyStage
+                    .transition(.opacity)
+            }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.85),
+                   value: viewModel.isActive)
+        .background(Color(.systemBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await viewModel.listenWhileVisible() }
+        .onChange(of: viewModel.wasRemoved) { _, removed in
+            if removed { dismiss() }
+        }
+        .onChange(of: viewModel.hasEnded) { _, ended in
+            // Host closed the room; guests leave quietly (the host
+            // dismisses via their own button path).
+            if ended { dismiss() }
+        }
+    }
+
+    // MARK: ACTIVE — the shared deck
+
+    private func playStage(deck: [Candidate]) -> some View {
+        VStack(spacing: 0) {
+            othersProgress
+            SwipeDeckView(
+                provider: RoomDeckProvider(deck: deck),
+                deckSize: deck.count,
+                allowsRestart: false,
+                onDecision: { candidate, decision in
+                    viewModel.sendSwipe(candidate: candidate, decision: decision)
+                }
+            )
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    /// The live payoff: everyone else's progress through the same deck.
+    @ViewBuilder
+    private var othersProgress: some View {
+        let others = viewModel.room.participants.filter { $0.userId != viewModel.myUserId }
+        if !others.isEmpty {
+            HStack(spacing: 14) {
+                ForEach(others) { participant in
+                    HStack(spacing: 5) {
+                        Text(participant.displayName)
+                            .font(.system(.caption, design: .rounded, weight: .semibold))
+                        Text("\(viewModel.progressByUser[participant.userId] ?? 0)/\(viewModel.deck?.count ?? 0)")
+                            .font(.system(.caption, design: .rounded, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color(.secondarySystemBackground), in: Capsule())
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .animation(.snappy, value: viewModel.progressByUser)
+        }
+    }
+
+    // MARK: LOBBY — the approval gate
+
+    private var lobbyStage: some View {
         VStack(spacing: 24) {
             codeCard
             roster
@@ -18,28 +92,8 @@ struct LobbyView: View {
             controls
         }
         .padding(24)
-        .background(Color(.systemBackground))
         .navigationTitle("Lobby")
-        .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
-        .task { await viewModel.listenWhileVisible() }
-        .onChange(of: viewModel.isActive) { _, started in
-            if started { deckPresented = true }
-        }
-        .onChange(of: viewModel.wasRemoved) { _, removed in
-            if removed { dismiss() }
-        }
-        .onChange(of: viewModel.hasEnded) { _, ended in
-            // Host closed the room: guests leave quietly (host dismisses
-            // via their own button path).
-            if ended && !deckPresented { dismiss() }
-        }
-        .navigationDestination(isPresented: $deckPresented) {
-            // Phase-2 seam: the deck is still the local mock. Phase 3
-            // replaces the provider with the server's shared deck; this
-            // navigation stays exactly as is.
-            SwipeDeckView(provider: MockRestaurantProvider())
-        }
     }
 
     private var codeCard: some View {
@@ -126,5 +180,16 @@ struct LobbyView: View {
                 .font(.system(.subheadline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Adapter: the server's shared deck exposed through the engine's
+/// provider socket. Content still enters the engine only as opaque
+/// Candidates — the wall stands, the source just moved server-side.
+struct RoomDeckProvider: CandidateProvider {
+    let deck: [Candidate]
+
+    func fetchCandidates(count: Int) async throws -> [Candidate] {
+        Array(deck.prefix(count))
     }
 }

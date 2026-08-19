@@ -33,8 +33,17 @@ struct SwipeDeckView: View {
     /// at 1.8×, so a quick confident flick works without dragging far.
     private let commitThreshold: CGFloat = 120
 
-    init(provider: any CandidateProvider) {
-        _viewModel = State(initialValue: DeckViewModel(provider: provider))
+    /// Solo practice restarts the local deck; a group session can't
+    /// (the deck is one shared server generation), so it waits instead.
+    private let allowsRestart: Bool
+
+    init(provider: any CandidateProvider,
+         deckSize: Int = 10,
+         allowsRestart: Bool = true,
+         onDecision: ((Candidate, SwipeDecision) -> Void)? = nil) {
+        self.allowsRestart = allowsRestart
+        _viewModel = State(initialValue: DeckViewModel(
+            provider: provider, deckSize: deckSize, onDecision: onDecision))
     }
 
     var body: some View {
@@ -107,9 +116,11 @@ struct SwipeDeckView: View {
                 case .failed(let message):
                     failedView(message)
                 case .finished:
-                    FinishedView(liked: viewModel.liked, total: viewModel.totalCount) {
-                        Task { await viewModel.loadDeck() }
-                    }
+                    FinishedView(
+                        liked: viewModel.liked, total: viewModel.totalCount,
+                        restart: allowsRestart
+                            ? { Task { await viewModel.loadDeck() } }
+                            : nil)
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
                 case .swiping:
                     cardStack(in: geo.size)
@@ -302,7 +313,9 @@ struct SwipeDeckView: View {
 private struct FinishedView: View {
     let liked: [Candidate]
     let total: Int
-    let restart: () -> Void
+    /// nil in group sessions: the deck can't restart, the server decides
+    /// what happens next (phase 4's TALLY takes over from here).
+    let restart: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -331,15 +344,22 @@ private struct FinishedView: View {
                 Spacer()
             }
 
-            Button(action: restart) {
-                Text("Swipe again")
-                    .font(.system(.headline, design: .rounded))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.primary, in: Capsule())
-                    .foregroundStyle(Color(.systemBackground))
+            if let restart {
+                Button(action: restart) {
+                    Text("Swipe again")
+                        .font(.system(.headline, design: .rounded))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.primary, in: Capsule())
+                        .foregroundStyle(Color(.systemBackground))
+                }
+                .buttonStyle(PressableButtonStyle())
+            } else {
+                Text("Waiting for the others to finish…")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 8)
             }
-            .buttonStyle(PressableButtonStyle())
         }
     }
 

@@ -1,11 +1,17 @@
 import { Router } from "express";
 import pg from "pg";
+import { MockRestaurantProvider, type CandidateProvider } from "./candidates.js";
 import { pool } from "./db.js";
 import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
 
 const UNIQUE_VIOLATION = "23505";
+
+/** Swapped for the Google Places provider in phase 5; nothing below
+ *  this line knows or cares which one it is. */
+const provider: CandidateProvider = new MockRestaurantProvider();
+const DECK_SIZE = 10;
 
 /** Fire-and-forget push to everyone connected to the room. Deliberately
  *  not awaited: the HTTP response shouldn't wait on fan-out, and a
@@ -135,13 +141,40 @@ roomsRouter.post("/rooms/:id/start", async (req, res) => {
     return;
   }
 
-  const { rows } = await pool.query<RoomRow>(
-    `UPDATE rooms SET state = 'ACTIVE'
-      WHERE id = $1 AND host_id = $2 AND state = 'LOBBY'
-      RETURNING *`,
-    [roomId, userId],
-  );
-  const room = rows[0];
+  // CAS + deck generation in ONE transaction: a room in ACTIVE with no
+  // deck is unrepresentable — either the transition and all ten
+  // candidates land together, or neither does.
+  const client = await pool.connect();
+  let room: RoomRow | undefined;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<RoomRow>(
+      `UPDATE rooms SET state = 'ACTIVE'
+        WHERE id = $1 AND host_id = $2 AND state = 'LOBBY'
+        RETURNING *`,
+      [roomId, userId],
+    );
+    room = rows[0];
+    if (room) {
+      const deck = await provider.fetchCandidates(DECK_SIZE);
+      for (const [position, candidate] of deck.entries()) {
+        await client.query(
+          `INSERT INTO room_candidates (room_id, candidate_id, position, title, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [room.id, candidate.id, position, candidate.title, candidate.metadata],
+        );
+      }
+      await client.query("COMMIT");
+    } else {
+      await client.query("ROLLBACK");
+    }
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
   if (room) {
     notify(room.id);
     res.json(await roomPayload(room));

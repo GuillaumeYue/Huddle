@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { pool } from "./db.js";
-import { isTerminal } from "./domain/roomState.js";
+import { acceptsSwipes, isRoomState, isTerminal } from "./domain/roomState.js";
 import { getRoomPayload, type RoomPayload } from "./roomsData.js";
 
 /**
@@ -20,15 +20,23 @@ import { getRoomPayload, type RoomPayload } from "./roomsData.js";
  *   connection, never across reconnects.
  */
 
-export interface LiveEvent {
-  type: "ROOM_STATE";
-  seq: number;
-  room: RoomPayload;
+export interface SwipeProgress {
+  userId: string;
+  completed: number;
+  deckSize: number;
 }
 
-/** Pure builder — unit-tested against the shared cross-language fixture. */
+export type LiveEvent =
+  | { type: "ROOM_STATE"; seq: number; room: RoomPayload }
+  | { type: "PROGRESS"; seq: number; progress: SwipeProgress };
+
+/** Pure builders — unit-tested against the shared cross-language fixtures. */
 export function makeRoomStateEvent(seq: number, room: RoomPayload): LiveEvent {
   return { type: "ROOM_STATE", seq, room };
+}
+
+export function makeProgressEvent(seq: number, progress: SwipeProgress): LiveEvent {
+  return { type: "PROGRESS", seq, progress };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -100,6 +108,11 @@ class RoomHub {
       // The channel skeleton (seq) is kept until the room ends — see
       // RoomChannel.seq. Cleared in broadcast on terminal state.
     });
+    ws.on("message", (data) => {
+      void this.handleMessage(conn, roomId, String(data)).catch((err) => {
+        console.error("[live] message handling failed:", err);
+      });
+    });
 
     // Snapshot on connect: the client needs no initial GET and no
     // cross-reconnect seq bookkeeping — this message defines its world.
@@ -108,6 +121,78 @@ class RoomHub {
     const room = await getRoomPayload(roomId);
     if (room && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(makeRoomStateEvent(++channel.seq, room)));
+    }
+  }
+
+  /**
+   * Uplink handler — the first ws-borne command. Same tolerance rules as
+   * the client's receiver: unknown types and malformed frames are
+   * dropped, never fatal. The wire is at-least-once (clients may resend);
+   * exactly-once-ness lives in the swipes PRIMARY KEY, not up here.
+   */
+  private async handleMessage(
+    conn: LiveConn, roomId: string, raw: string,
+  ): Promise<void> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const msg = parsed as { type?: unknown; candidateId?: unknown; decision?: unknown };
+    if (msg.type !== "SWIPE") return;
+    if (typeof msg.candidateId !== "string") return;
+    if (msg.decision !== "YES" && msg.decision !== "NO") return;
+
+    // The swipe gate: only ACTIVE accepts input. This is where
+    // "REVEALING is input-closed" stops being a comment in the state
+    // machine and starts rejecting real late packets.
+    const { rows } = await pool.query<{ state: string }>(
+      "SELECT state FROM rooms WHERE id = $1 AND closed_at IS NULL",
+      [roomId],
+    );
+    const state = rows[0]?.state;
+    if (!state || !isRoomState(state) || !acceptsSwipes(state)) return;
+
+    let inserted = false;
+    try {
+      const { rowCount } = await pool.query(
+        `INSERT INTO swipes (room_id, user_id, candidate_id, decision)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (room_id, round, user_id, candidate_id) DO NOTHING`,
+        [roomId, conn.userId, msg.candidateId, msg.decision],
+      );
+      inserted = rowCount === 1;
+    } catch {
+      // FK violation: candidate not in this room's deck — a buggy or
+      // hostile client; drop it (integrity was declared in the schema).
+      return;
+    }
+    if (inserted) {
+      await this.broadcastProgress(roomId, conn.userId);
+    }
+  }
+
+  private async broadcastProgress(roomId: string, userId: string): Promise<void> {
+    const channel = this.channels.get(roomId);
+    if (!channel || channel.conns.size === 0) return;
+
+    const { rows } = await pool.query<{ completed: string; deck_size: string }>(
+      `SELECT
+         (SELECT count(*) FROM swipes
+           WHERE room_id = $1 AND user_id = $2)      AS completed,
+         (SELECT count(*) FROM room_candidates
+           WHERE room_id = $1)                       AS deck_size`,
+      [roomId, userId],
+    );
+    const event = makeProgressEvent(++channel.seq, {
+      userId,
+      completed: Number(rows[0]?.completed ?? 0),
+      deckSize: Number(rows[0]?.deck_size ?? 0),
+    });
+    const message = JSON.stringify(event);
+    for (const conn of channel.conns) {
+      if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(message);
     }
   }
 

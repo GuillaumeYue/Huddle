@@ -36,6 +36,37 @@ struct WireContractTests {
         #expect(room.participants[0].isHost)
         #expect(room.participants[1].displayName == "Bob")
         #expect(!room.participants[1].isHost)
+
+        let candidates = try #require(room.candidates)
+        #expect(candidates.count == 2)
+        #expect(candidates[0].id == "mock-002")
+        #expect(candidates[0].title == "Sakura Sushi Bar")
+        #expect(candidates[0].metadata["cuisine"] == "Japanese")
+        #expect(candidates[1].metadata["priceLevel"] == "1")
+    }
+
+    @Test("PROGRESS event fixture decodes")
+    func progressEventDecodes() throws {
+        let event = try JSONDecoder().decode(
+            LiveEventDTO.self, from: fixtureData("progress-event.json"))
+        #expect(event.type == "PROGRESS")
+        #expect(event.seq == 12)
+        #expect(event.room == nil)
+        let progress = try #require(event.progress)
+        #expect(progress.userId == "07dd9958-e746-4654-851d-8061147c8e7c")
+        #expect(progress.completed == 3)
+        #expect(progress.deckSize == 10)
+    }
+
+    @Test("SWIPE uplink encodes to the wire shape live.ts expects")
+    func swipeUplinkEncodes() throws {
+        let data = try JSONEncoder().encode(
+            SwipeEventDTO(candidateId: "mock-002", decision: .yes))
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["type"] as? String == "SWIPE")
+        #expect(json["candidateId"] as? String == "mock-002")
+        #expect(json["decision"] as? String == "YES")
     }
 
     @Test("Unknown event types decode instead of throwing — forward compatibility")

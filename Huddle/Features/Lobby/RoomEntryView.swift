@@ -26,7 +26,7 @@ struct RoomEntryView: View {
         .navigationTitle("Rooms")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $room) { room in
-            LobbyView(viewModel: LobbyViewModel(
+            RoomSessionView(viewModel: RoomSessionViewModel(
                 room: room, api: api, myUserId: session.userId ?? ""))
         }
     }

@@ -41,10 +41,15 @@ final class DeckViewModel {
 
     private let provider: any CandidateProvider
     private let deckSize: Int
+    /// Group sessions hook here to ship each verdict to the server the
+    /// moment it's committed locally. nil in solo practice.
+    private let onDecision: ((Candidate, SwipeDecision) -> Void)?
 
-    init(provider: any CandidateProvider, deckSize: Int = 10) {
+    init(provider: any CandidateProvider, deckSize: Int = 10,
+         onDecision: ((Candidate, SwipeDecision) -> Void)? = nil) {
         self.provider = provider
         self.deckSize = deckSize
+        self.onDecision = onDecision
     }
 
     func loadDeck() async {
@@ -67,5 +72,6 @@ final class DeckViewModel {
         history.append(SwipeRecord(candidate: candidate, decision: decision))
         stack.removeFirst()
         if stack.isEmpty { phase = .finished }
+        onDecision?(candidate, decision)
     }
 }

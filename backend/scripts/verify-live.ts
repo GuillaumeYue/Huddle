@@ -23,8 +23,18 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 interface User { id: string }
-interface Room { id: string; joinCode: string; participants: { userId: string }[] }
-interface LiveEvent { type: string; seq: number; room?: Room }
+interface Room {
+  id: string;
+  joinCode: string;
+  participants: { userId: string }[];
+  candidates?: { id: string }[];
+}
+interface LiveEvent {
+  type: string;
+  seq: number;
+  room?: Room;
+  progress?: { userId: string; completed: number; deckSize: number };
+}
 
 /** Collects events from one ws connection with an awaitable queue. */
 function connect(roomId: string, userId: string) {
@@ -47,9 +57,17 @@ function connect(roomId: string, userId: string) {
       const head = queue.shift();
       if (head) return Promise.resolve(head);
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("timed out waiting for event")), timeoutMs);
-        waiters.push((e) => { clearTimeout(timer); resolve(e); });
+        const waiter = (e: LiveEvent) => { clearTimeout(timer); resolve(e); };
+        const timer = setTimeout(() => {
+          // Remove the dead waiter, or the NEXT real event gets swallowed
+          // by a promise that already rejected — a stale waiter eats one
+          // event each. (Found the hard way: the close broadcast vanished
+          // into the timed-out waiters of the two negative checks above.)
+          const i = waiters.indexOf(waiter);
+          if (i !== -1) waiters.splice(i, 1);
+          reject(new Error("timed out waiting for event"));
+        }, timeoutMs);
+        waiters.push(waiter);
       });
     },
     waitClosed(timeoutMs = 3000): Promise<number> {
@@ -116,7 +134,36 @@ const [aliceSees, bobSees] = await Promise.all([aliceWs.nextEvent(), bobWs2.next
 check("start reaches every member",
   aliceSees.room !== undefined && bobSees.room !== undefined);
 
-// 7. Close is terminal: broadcast, then the hub hangs up on everyone
+// 7. The started room carries the shared deck
+const deck = aliceSees.room?.candidates ?? [];
+check("ACTIVE snapshot carries a 10-card shared deck", deck.length === 10);
+check("both members see the same deck in the same order",
+  JSON.stringify(deck) === JSON.stringify(bobSees.room?.candidates ?? []));
+
+// 8. Swipe uplink: Bob's verdict produces a PROGRESS broadcast for all
+const firstCard = deck[0]!.id;
+bobWs2.ws.send(JSON.stringify({ type: "SWIPE", candidateId: firstCard, decision: "YES" }));
+const [aliceProgress, bobProgress] = await Promise.all([
+  aliceWs.nextEvent(), bobWs2.nextEvent(),
+]);
+check("swipe fans out as PROGRESS to every member",
+  aliceProgress.type === "PROGRESS" && bobProgress.type === "PROGRESS" &&
+  aliceProgress.progress?.userId === bob.id &&
+  aliceProgress.progress?.completed === 1 &&
+  aliceProgress.progress?.deckSize === 10);
+
+// 9. Resending the same swipe is a declared no-op: no second broadcast
+bobWs2.ws.send(JSON.stringify({ type: "SWIPE", candidateId: firstCard, decision: "NO" }));
+const duplicateSilent = await aliceWs.nextEvent(800).then(() => false, () => true);
+check("duplicate swipe (even flipped) broadcasts nothing — idempotency key holds",
+  duplicateSilent);
+
+// 10. A candidate outside the deck is dropped by the declared FK
+bobWs2.ws.send(JSON.stringify({ type: "SWIPE", candidateId: "not-a-card", decision: "YES" }));
+const bogusSilent = await aliceWs.nextEvent(800).then(() => false, () => true);
+check("swipe on a non-deck candidate is dropped", bogusSilent);
+
+// 11. Close is terminal: broadcast, then the hub hangs up on everyone
 await post(`/rooms/${room.id}/close`, { userId: alice.id });
 await aliceWs.nextEvent();
 await bobWs2.nextEvent();

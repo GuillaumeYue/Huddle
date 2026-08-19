@@ -1,0 +1,9 @@
+{
+  "type": "PROGRESS",
+  "seq": 12,
+  "progress": {
+    "userId": "07dd9958-e746-4654-851d-8061147c8e7c",
+    "completed": 3,
+    "deckSize": 10
+  }
+}

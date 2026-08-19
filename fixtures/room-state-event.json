@@ -17,6 +17,28 @@
         "displayName": "Bob",
         "isHost": false
       }
+    ],
+    "candidates": [
+      {
+        "id": "mock-002",
+        "title": "Sakura Sushi Bar",
+        "metadata": {
+          "cuisine": "Japanese",
+          "priceLevel": "3",
+          "rating": "4.7",
+          "distanceMeters": "1200"
+        }
+      },
+      {
+        "id": "mock-009",
+        "title": "The Burger Joint",
+        "metadata": {
+          "cuisine": "American",
+          "priceLevel": "1",
+          "rating": "3.9",
+          "distanceMeters": "450"
+        }
+      }
     ]
   }
 }
