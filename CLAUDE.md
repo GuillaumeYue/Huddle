@@ -69,6 +69,7 @@ Full design lives in `huddle-project-brief.md`. Summary:
 - **Out:** payments, web client, free-text chat, voice/video, reservations/booking, DMs, ML infra.
 
 **v2+ parking lot (do not build):**
+- Editable display name (self-serve rename; natural home: the profile/settings surface that arrives with SIWA). Decided against: collision-triggered rename prompt at join — friction at the worst moment (join flow), awkward state ownership (global name vs room-level collision), and the automatic fallback (join-order suffix + stable color, shipped) must exist regardless.
 - Friend graph / social layer. The recurring need behind it — "re-invite the people I always eat with" — is derivable from **session history** (phase 7) with no graph to model. Revisit only if history proves insufficient.
 - Majority / configurable decision threshold as a room setting.
 - Live location, preset-phrase persistence, voice chat (v3+, WebRTC P2P).
