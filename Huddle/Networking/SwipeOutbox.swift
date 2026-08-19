@@ -39,12 +39,12 @@ final class SwipeOutbox {
     /// A (re)connection is live: adopt its uplink and replay the backlog.
     func connectionReady(_ send: @escaping (SwipeEventDTO) async throws -> Void) {
         sender = send
-        log.info("connectionReady, pending=\(self.pending.count)")
+        log.notice("connectionReady, pending=\(self.pending.count)")
         Task { await drain() }
     }
 
     func connectionLost() {
-        log.info("connectionLost, pending=\(self.pending.count)")
+        log.notice("connectionLost, pending=\(self.pending.count)")
         sender = nil
     }
 
@@ -59,7 +59,7 @@ final class SwipeOutbox {
             do {
                 try await send(next)
                 pending.removeFirst()
-                log.info("sent \(next.candidateId, privacy: .public), pending=\(self.pending.count)")
+                log.notice("sent \(next.candidateId, privacy: .public), pending=\(self.pending.count)")
             } catch {
                 // Send failed — the verdict STAYS queued (the whole point).
                 // The next connectionReady() will replay it; if it did
