@@ -62,6 +62,9 @@ struct RoomSessionView: View {
             HStack(spacing: 14) {
                 ForEach(others) { participant in
                     HStack(spacing: 5) {
+                        Circle()
+                            .fill(ParticipantColor.for(participant.userId))
+                            .frame(width: 7, height: 7)
                         Text(viewModel.label(for: participant.userId))
                             .font(.system(.caption, design: .rounded, weight: .semibold))
                         Text("\(viewModel.progressByUser[participant.userId] ?? 0)/\(viewModel.deck?.count ?? 0)")
@@ -118,8 +121,8 @@ struct RoomSessionView: View {
             ForEach(viewModel.room.participants) { participant in
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(Color(.systemGreen))
-                        .frame(width: 8, height: 8)
+                        .fill(ParticipantColor.for(participant.userId))
+                        .frame(width: 10, height: 10)
                     Text(viewModel.label(for: participant.userId))
                         .font(.system(.body, design: .rounded, weight: .semibold))
                     if participant.isHost {
@@ -201,5 +204,25 @@ struct RoomDeckProvider: CandidateProvider {
 
     func fetchCandidates(count: Int) async throws -> [Candidate] {
         Array(deck.prefix(count))
+    }
+}
+
+/// A stable recognition color per participant — one more channel on top
+/// of the name suffix, never the only one (color-blind users, and the
+/// palette is finite while numbering isn't).
+///
+/// Keyed to userId via stable hash, NOT to roster position: a kick must
+/// not recolor everyone below (state belongs to identity, not role —
+/// the ghost-card lesson, applied to pixels). Trade-off accepted: two
+/// people can collide on a color; the suffix disambiguates them.
+enum ParticipantColor {
+    private static let palette: [Color] = [
+        Color(.systemBlue), Color(.systemPink), Color(.systemOrange),
+        Color(.systemTeal), Color(.systemPurple), Color(.systemGreen),
+        Color(.systemIndigo), Color(.systemBrown),
+    ]
+
+    static func `for`(_ userId: String) -> Color {
+        palette[Int(FNV1a.hash(userId) % UInt64(palette.count))]
     }
 }

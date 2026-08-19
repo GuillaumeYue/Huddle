@@ -128,16 +128,7 @@ private struct Palette {
     let deep: Color
 
     static func `for`(_ id: String) -> Palette {
-        all[Int(fnv1a(id) % UInt64(all.count))]
-    }
-
-    private static func fnv1a(_ s: String) -> UInt64 {
-        var h: UInt64 = 0xcbf29ce484222325
-        for byte in s.utf8 {
-            h ^= UInt64(byte)
-            h &*= 0x100000001b3
-        }
-        return h
+        all[Int(FNV1a.hash(id) % UInt64(all.count))]
     }
 
     private static let all: [Palette] = [
