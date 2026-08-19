@@ -32,6 +32,10 @@ struct RoomParticipantDTO: Decodable, Identifiable, Hashable {
     let userId: String
     let displayName: String
     let isHost: Bool
+    /// Swipes recorded this round, from the authoritative snapshot.
+    /// PROGRESS deltas accelerate this; the snapshot is the truth that
+    /// survives your own disconnections.
+    let completedCount: Int
 
     var id: String { userId }
 }

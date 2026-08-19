@@ -1,4 +1,4 @@
-import type { IncomingMessage, Server } from "node:http";
+import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { pool } from "./db.js";
 import { acceptsSwipes, isRoomState, isTerminal } from "./domain/roomState.js";
@@ -61,7 +61,15 @@ class RoomHub {
   private channels = new Map<string, RoomChannel>();
   private wss = new WebSocketServer({ noServer: true });
 
-  /** Hook the HTTP server's upgrade path: ws://…/rooms/:id/live?userId= */
+  /** Hook the HTTP server's upgrade path: ws://…/rooms/:id/live?userId=
+   *
+   *  Authorization runs BEFORE the handshake completes. The tempting
+   *  alternative — finish the handshake, then check membership, then
+   *  attach listeners — leaves an await gap between "socket open" and
+   *  "someone listening": an eager client (our outbox drains the moment
+   *  the connection opens) can land messages in that gap, and an
+   *  EventEmitter with no listener drops them on the floor. Verify
+   *  first, and attach listeners synchronously at open. */
   attach(server: Server): void {
     server.on("upgrade", (req, socket, head) => {
       const url = new URL(req.url ?? "", "http://localhost");
@@ -72,30 +80,35 @@ class RoomHub {
         socket.destroy();
         return;
       }
-      this.wss.handleUpgrade(req, socket, head, (ws) => {
-        void this.accept(ws, roomId, userId, req);
+      void (async () => {
+        // Connection-as-identity: (roomId, userId) checked against the
+        // db. Auth is deferred, so userId is a query param; SIWA later
+        // replaces this with a token — nothing below changes.
+        const { rows } = await pool.query(
+          `SELECT 1 FROM room_participants rp
+            JOIN rooms r ON r.id = rp.room_id
+           WHERE rp.room_id = $1 AND rp.user_id = $2 AND r.closed_at IS NULL`,
+          [roomId, userId],
+        );
+        if (rows.length === 0) {
+          socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        this.wss.handleUpgrade(req, socket, head, (ws) => {
+          this.accept(ws, roomId, userId);
+        });
+      })().catch((err) => {
+        console.error("[live] upgrade failed:", err);
+        socket.destroy();
       });
     });
   }
 
-  /** Connection-as-identity: the (roomId, userId) pair is checked against
-   *  the database before the socket joins the channel. Auth is deferred,
-   *  so userId arrives as a query param; SIWA later replaces this with a
-   *  token — the registry and broadcast code won't change. */
-  private async accept(
-    ws: WebSocket, roomId: string, userId: string, _req: IncomingMessage,
-  ): Promise<void> {
-    const { rows } = await pool.query(
-      `SELECT 1 FROM room_participants rp
-        JOIN rooms r ON r.id = rp.room_id
-       WHERE rp.room_id = $1 AND rp.user_id = $2 AND r.closed_at IS NULL`,
-      [roomId, userId],
-    );
-    if (rows.length === 0) {
-      ws.close(4403, "not a participant of a live room");
-      return;
-    }
-
+  /** Synchronous on purpose: every listener is attached before this
+   *  function returns, i.e. before anything else can run — no await gap
+   *  for early uplink messages to fall into. */
+  private accept(ws: WebSocket, roomId: string, userId: string): void {
     let channel = this.channels.get(roomId);
     if (!channel) {
       channel = { seq: 0, conns: new Set() };
@@ -118,10 +131,12 @@ class RoomHub {
     // cross-reconnect seq bookkeeping — this message defines its world.
     // (A mutation racing this fetch can deliver the same state twice
     // with adjacent seqs; snapshot-replace semantics make that benign.)
-    const room = await getRoomPayload(roomId);
-    if (room && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(makeRoomStateEvent(++channel.seq, room)));
-    }
+    void (async () => {
+      const room = await getRoomPayload(roomId);
+      if (room && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(makeRoomStateEvent(++channel.seq, room)));
+      }
+    })().catch((err) => console.error("[live] snapshot failed:", err));
   }
 
   /**

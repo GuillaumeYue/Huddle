@@ -1,6 +1,7 @@
 import Foundation
 import HuddleCore
 import Observation
+import os
 
 /// State of one room session, lobby through play, kept fresh by server
 /// push over a single socket that lives as long as the session view.
@@ -83,9 +84,12 @@ final class RoomSessionViewModel {
     /// Unlike the lobby-only version, this KEEPS listening through
     /// ACTIVE — the same socket carries swipe uplink and progress
     /// downlink while the deck is on screen.
+    private let log = Logger(subsystem: "com.han.Huddle", category: "session")
+
     func listenWhileVisible() async {
         while !Task.isCancelled && !isOver {
             var lastSeq = 0
+            log.info("connecting to room \(self.room.id, privacy: .public)")
             let connection = socket.connect(roomId: room.id, userId: myUserId)
             // Hand the fresh uplink to the outbox: anything queued while
             // we were dark replays right now, in order.
@@ -106,9 +110,11 @@ final class RoomSessionViewModel {
                     }
                     if isOver { break }
                 }
+                log.info("event stream ended cleanly")
             } catch {
                 // Connection dropped mid-session; breathe and reconnect —
                 // the on-connect snapshot resyncs the room state.
+                log.error("event stream failed: \(error, privacy: .public)")
             }
             outbox.connectionLost()
             if !isOver {
@@ -153,6 +159,16 @@ final class RoomSessionViewModel {
 
     private func apply(_ snapshot: RoomDTO) {
         room = snapshot
+        // Progress resync: the snapshot carries authoritative counts, so
+        // PROGRESS events missed while we were disconnected are healed
+        // here. max() guards the benign race where a snapshot fetched
+        // just before a swipe is delivered just after its PROGRESS —
+        // counts are monotonic within a round, so newer == larger.
+        for participant in snapshot.participants {
+            progressByUser[participant.userId] = max(
+                progressByUser[participant.userId] ?? 0,
+                participant.completedCount)
+        }
         if !snapshot.participants.contains(where: { $0.userId == myUserId }) {
             wasRemoved = true
         }

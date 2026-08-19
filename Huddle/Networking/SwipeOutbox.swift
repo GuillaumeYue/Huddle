@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// The outbox half of "optimistic swipe + reconcile".
 ///
@@ -27,19 +28,23 @@ final class SwipeOutbox {
     /// The current connection's uplink; nil while disconnected.
     private var sender: ((SwipeEventDTO) async throws -> Void)?
     private var isDraining = false
+    private let log = Logger(subsystem: "com.han.Huddle", category: "outbox")
 
     func enqueue(_ event: SwipeEventDTO) {
         pending.append(event)
+        log.info("enqueue \(event.candidateId, privacy: .public) pending=\(self.pending.count) online=\(self.sender != nil)")
         Task { await drain() }
     }
 
     /// A (re)connection is live: adopt its uplink and replay the backlog.
     func connectionReady(_ send: @escaping (SwipeEventDTO) async throws -> Void) {
         sender = send
+        log.info("connectionReady, pending=\(self.pending.count)")
         Task { await drain() }
     }
 
     func connectionLost() {
+        log.info("connectionLost, pending=\(self.pending.count)")
         sender = nil
     }
 
@@ -54,10 +59,12 @@ final class SwipeOutbox {
             do {
                 try await send(next)
                 pending.removeFirst()
+                log.info("sent \(next.candidateId, privacy: .public), pending=\(self.pending.count)")
             } catch {
                 // Send failed — the verdict STAYS queued (the whole point).
                 // The next connectionReady() will replay it; if it did
                 // reach the server after all, the PK absorbs the replay.
+                log.error("send failed \(next.candidateId, privacy: .public): \(error, privacy: .public), pending=\(self.pending.count)")
                 break
             }
         }

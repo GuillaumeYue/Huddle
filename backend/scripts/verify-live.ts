@@ -26,7 +26,7 @@ interface User { id: string }
 interface Room {
   id: string;
   joinCode: string;
-  participants: { userId: string }[];
+  participants: { userId: string; completedCount: number }[];
   candidates?: { id: string }[];
 }
 interface LiveEvent {
@@ -50,6 +50,10 @@ function connect(roomId: string, userId: string) {
     else queue.push(event);
   });
   ws.on("close", (code) => { closed = { code }; });
+  // A refused handshake (HTTP 403 before upgrade) surfaces as 'error';
+  // without a listener the emitter would throw and kill the script.
+  let rejected = false;
+  ws.on("error", () => { rejected = true; });
 
   return {
     ws,
@@ -78,6 +82,10 @@ function connect(roomId: string, userId: string) {
         ws.on("close", (code) => { clearTimeout(timer); resolve(code); });
       });
     },
+    async wasRejected(timeoutMs = 3000): Promise<boolean> {
+      await this.waitClosed(timeoutMs).catch(() => undefined);
+      return rejected && queue.length === 0;
+    },
   };
 }
 
@@ -97,10 +105,12 @@ check("host gets ROOM_STATE snapshot on connect",
   event.type === "ROOM_STATE" && event.room?.participants.length === 1);
 const seqAfterSnapshot = event.seq;
 
-// 2. Non-member is rejected
+// 2. Non-member is rejected BEFORE the handshake completes (membership
+// is verified pre-upgrade so the listener attaches synchronously at
+// open — no await gap for early uplink frames to fall into)
 const strangerWs = connect(room.id, bob.id);
-check("non-member socket is closed with 4403",
-  (await strangerWs.waitClosed()) === 4403);
+check("non-member upgrade is refused (403, no handshake)",
+  await strangerWs.wasRejected());
 
 // 3. Join broadcasts to the room, seq advances
 await post("/rooms/join", { code: room.joinCode, userId: bob.id });
@@ -163,13 +173,41 @@ bobWs2.ws.send(JSON.stringify({ type: "SWIPE", candidateId: "not-a-card", decisi
 const bogusSilent = await aliceWs.nextEvent(800).then(() => false, () => true);
 check("swipe on a non-deck candidate is dropped", bogusSilent);
 
-// 11. Close is terminal: broadcast, then the hub hangs up on everyone
+// 11. Regression guard for the reconnect-replay path: a swipe fired the
+// INSTANT the socket opens (exactly how the outbox drains a backlog)
+// must not fall into any server-side listener gap.
+const bobWs3 = connect(room.id, bob.id);
+bobWs3.ws.on("open", () => {
+  bobWs3.ws.send(JSON.stringify(
+    { type: "SWIPE", candidateId: deck[1]!.id, decision: "NO" }));
+});
+const atOpen = await aliceWs.nextEvent();
+check("at-open swipe (outbox replay shape) lands and fans out",
+  atOpen.type === "PROGRESS" && atOpen.progress?.completed === 2);
+await bobWs2.nextEvent(); // drain bobWs2's copy of that PROGRESS
+await bobWs3.nextEvent(); // bobWs3's snapshot
+await bobWs3.nextEvent(); // bobWs3's copy of the PROGRESS
+
+// 12. Snapshot carries authoritative progress: a FRESH connection must
+// see counts it never received deltas for (delta-only state dies with
+// a disconnect; the snapshot is the truth).
+const aliceWs2 = connect(room.id, alice.id);
+const resync = await aliceWs2.nextEvent();
+const bobInSnapshot = resync.room?.participants.find((p) => p.userId === bob.id);
+check("fresh snapshot carries completedCount (progress resync)",
+  bobInSnapshot?.completedCount === 2);
+
+// 13. Close is terminal: broadcast, then the hub hangs up on everyone
 await post(`/rooms/${room.id}/close`, { userId: alice.id });
 await aliceWs.nextEvent();
 await bobWs2.nextEvent();
-const [aliceClose, bobClose] = await Promise.all([aliceWs.waitClosed(), bobWs2.waitClosed()]);
+const [aliceClose, bobClose, bob3Close, alice2Close] = await Promise.all([
+  aliceWs.waitClosed(), bobWs2.waitClosed(),
+  bobWs3.waitClosed(), aliceWs2.waitClosed(),
+]);
 check("terminal state closes all sockets with 1000",
-  aliceClose === 1000 && bobClose === 1000);
+  aliceClose === 1000 && bobClose === 1000 &&
+  bob3Close === 1000 && alice2Close === 1000);
 
 console.log("\nall live-layer checks passed");
 process.exit(0);
