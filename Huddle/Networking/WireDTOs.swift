@@ -72,7 +72,7 @@ struct SwipeProgressDTO: Decodable {
 /// Uplink: one verdict, sent over the room socket. The server's swipes
 /// primary key (room, round, user, candidate) makes resends no-ops, so
 /// this message may be sent at-least-once without double counting.
-struct SwipeEventDTO: Encodable {
+struct SwipeEventDTO: Encodable, Equatable {
     var type = "SWIPE"
     let candidateId: String
     let decision: SwipeDecision

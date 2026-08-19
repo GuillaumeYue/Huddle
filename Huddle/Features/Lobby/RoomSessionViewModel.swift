@@ -22,7 +22,7 @@ final class RoomSessionViewModel {
 
     private let api: HuddleAPIClient
     private let socket = RoomSocket()
-    private var connection: RoomSocket.Connection?
+    private let outbox = SwipeOutbox()
     let myUserId: String
 
     init(room: RoomDTO, api: HuddleAPIClient, myUserId: String) {
@@ -84,11 +84,12 @@ final class RoomSessionViewModel {
     /// ACTIVE — the same socket carries swipe uplink and progress
     /// downlink while the deck is on screen.
     func listenWhileVisible() async {
-        defer { connection = nil }
         while !Task.isCancelled && !isOver {
             var lastSeq = 0
             let connection = socket.connect(roomId: room.id, userId: myUserId)
-            self.connection = connection
+            // Hand the fresh uplink to the outbox: anything queued while
+            // we were dark replays right now, in order.
+            outbox.connectionReady { try await connection.send($0) }
             do {
                 for try await event in connection.events {
                     guard event.seq > lastSeq else { continue } // stale — skip
@@ -109,22 +110,20 @@ final class RoomSessionViewModel {
                 // Connection dropped mid-session; breathe and reconnect —
                 // the on-connect snapshot resyncs the room state.
             }
+            outbox.connectionLost()
             if !isOver {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
     }
 
-    /// Ship one verdict. NAIVELY fire-and-forget, on purpose: if the
-    /// socket happens to be down, this swipe is silently lost — the
-    /// server never hears it, and the room can hang waiting for us.
-    /// That loss is the demonstration piece of the optimistic-swipe /
-    /// reconcile lab, which fixes it with a pending queue + replay.
+    /// Ship one verdict — via the outbox, never directly. The fire-and-
+    /// forget version of this method (in history, 504c192) silently lost
+    /// swipes whenever the socket was down; now a verdict is either
+    /// delivered or still sitting in `pending` waiting for the next
+    /// connection. The server's idempotency key absorbs any replays.
     func sendSwipe(candidate: Candidate, decision: SwipeDecision) {
-        let event = SwipeEventDTO(candidateId: candidate.id, decision: decision)
-        Task { [connection] in
-            try? await connection?.send(event)
-        }
+        outbox.enqueue(SwipeEventDTO(candidateId: candidate.id, decision: decision))
     }
 
     func start() async {
