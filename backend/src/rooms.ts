@@ -2,56 +2,23 @@ import { Router } from "express";
 import pg from "pg";
 import { pool } from "./db.js";
 import { generateJoinCode } from "./joinCode.js";
-
-/**
- * Row types are hand-written promises about what the SQL returns — the
- * compiler checks our USE of these fields, but cannot check the promise
- * itself against the schema. That gap is the price of raw SQL (the
- * Drizzle fork we consciously declined); keep these in one place and
- * update them with every migration.
- */
-interface RoomRow {
-  id: string;
-  join_code: string;
-  host_id: string;
-  state: string;
-  created_at: string;
-}
-
-interface ParticipantRow {
-  user_id: string;
-  display_name: string;
-  joined_at: string;
-}
+import { hub } from "./live.js";
+import { roomPayload, type RoomRow } from "./roomsData.js";
 
 const UNIQUE_VIOLATION = "23505";
+
+/** Fire-and-forget push to everyone connected to the room. Deliberately
+ *  not awaited: the HTTP response shouldn't wait on fan-out, and a
+ *  broadcast failure must not fail the mutation that already committed. */
+function notify(roomId: string): void {
+  hub.broadcastRoom(roomId).catch((err) => {
+    console.error("[live] broadcast failed:", err);
+  });
+}
 
 /** Reject junk before it reaches pg as a 22P02 cast error → 500. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (s: string): boolean => UUID_RE.test(s);
-
-/** Wire shape for a room, camelCased at the boundary. */
-async function roomPayload(room: RoomRow) {
-  const { rows: participants } = await pool.query<ParticipantRow>(
-    `SELECT rp.user_id, u.display_name, rp.joined_at
-       FROM room_participants rp
-       JOIN users u ON u.id = rp.user_id
-      WHERE rp.room_id = $1
-      ORDER BY rp.joined_at`,
-    [room.id],
-  );
-  return {
-    id: room.id,
-    joinCode: room.join_code,
-    hostId: room.host_id,
-    state: room.state,
-    participants: participants.map((p) => ({
-      userId: p.user_id,
-      displayName: p.display_name,
-      isHost: p.user_id === room.host_id,
-    })),
-  };
-}
 
 export const roomsRouter = Router();
 
@@ -136,11 +103,13 @@ roomsRouter.post("/rooms/join", async (req, res) => {
 
   // Idempotent by declaration: rejoin/double-tap hits the (room_id,
   // user_id) primary key and becomes a no-op instead of an error.
-  await pool.query(
+  const { rowCount } = await pool.query(
     `INSERT INTO room_participants (room_id, user_id) VALUES ($1, $2)
      ON CONFLICT (room_id, user_id) DO NOTHING`,
     [room.id, userId],
   );
+  // Broadcast only on actual change — the idempotent no-op moved nothing.
+  if (rowCount === 1) notify(room.id);
 
   res.json(await roomPayload(room));
 });
@@ -174,6 +143,7 @@ roomsRouter.post("/rooms/:id/start", async (req, res) => {
   );
   const room = rows[0];
   if (room) {
+    notify(room.id);
     res.json(await roomPayload(room));
     return;
   }
@@ -239,8 +209,8 @@ roomsRouter.post("/rooms/:id/kick", async (req, res) => {
     res.status(409).json({ error: "room already started" });
     return;
   }
-  // rowCount 0 here just means the target was already gone — fine.
-  void rowCount;
+  // rowCount 0 just means the target was already gone — no broadcast.
+  if (rowCount === 1) notify(room.id);
   res.json(await roomPayload(room));
 });
 
@@ -269,6 +239,7 @@ roomsRouter.post("/rooms/:id/close", async (req, res) => {
   );
   const room = rows[0];
   if (room) {
+    notify(room.id); // terminal broadcast: hub closes the channel after it
     res.json(await roomPayload(room));
     return;
   }

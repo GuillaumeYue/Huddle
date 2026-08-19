@@ -38,6 +38,21 @@ struct ServerErrorDTO: Decodable {
     let error: String
 }
 
+/// Envelope of every server-push event (mirror of live.ts LiveEvent).
+///
+/// `type` is a raw String, NOT an enum — deliberately (invariant 3): a
+/// future server may broadcast types this build has never heard of, and
+/// they must decode-and-be-skipped, not throw and kill the stream. The
+/// per-type payload fields are optional for the same reason.
+/// `seq` orders events within one connection session; the on-connect
+/// snapshot starts the world over, so it is never compared across
+/// reconnects.
+struct LiveEventDTO: Decodable {
+    let type: String
+    let seq: Int
+    let room: RoomDTO?
+}
+
 // MARK: Request bodies (the outbound half of the treaty)
 
 struct CreateUserBody: Encodable { let displayName: String }

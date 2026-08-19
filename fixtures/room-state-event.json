@@ -1,0 +1,22 @@
+{
+  "type": "ROOM_STATE",
+  "seq": 7,
+  "room": {
+    "id": "b077a49e-4aac-40e9-953b-e9035c1658d1",
+    "joinCode": "JHYAJ7",
+    "hostId": "0ec08f3e-c110-4dce-80b8-99c4cdb97b10",
+    "state": "ACTIVE",
+    "participants": [
+      {
+        "userId": "0ec08f3e-c110-4dce-80b8-99c4cdb97b10",
+        "displayName": "Alice",
+        "isHost": true
+      },
+      {
+        "userId": "07dd9958-e746-4654-851d-8061147c8e7c",
+        "displayName": "Bob",
+        "isHost": false
+      }
+    ]
+  }
+}

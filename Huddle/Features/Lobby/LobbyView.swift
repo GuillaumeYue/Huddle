@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// The approval gate, live. Shows the code to read out loud, the roster
-/// as the server sees it (polled), and host controls. When the server
-/// says ACTIVE, everyone here — host and guests alike — moves to the
-/// deck, because the *server* moved, not because a button did.
+/// as the server sees it (pushed over the room socket), and host
+/// controls. When the server says ACTIVE, everyone here — host and
+/// guests alike — moves to the deck, because the *server* moved, not
+/// because a button did.
 struct LobbyView: View {
     @Environment(\.dismiss) private var dismiss
     @State var viewModel: LobbyViewModel
@@ -21,12 +22,17 @@ struct LobbyView: View {
         .navigationTitle("Lobby")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
-        .task { await viewModel.pollWhileVisible() }
-        .onChange(of: viewModel.hasStarted) { _, started in
+        .task { await viewModel.listenWhileVisible() }
+        .onChange(of: viewModel.isActive) { _, started in
             if started { deckPresented = true }
         }
         .onChange(of: viewModel.wasRemoved) { _, removed in
             if removed { dismiss() }
+        }
+        .onChange(of: viewModel.hasEnded) { _, ended in
+            // Host closed the room: guests leave quietly (host dismisses
+            // via their own button path).
+            if ended && !deckPresented { dismiss() }
         }
         .navigationDestination(isPresented: $deckPresented) {
             // Phase-2 seam: the deck is still the local mock. Phase 3
