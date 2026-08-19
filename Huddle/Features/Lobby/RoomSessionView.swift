@@ -62,7 +62,7 @@ struct RoomSessionView: View {
             HStack(spacing: 14) {
                 ForEach(others) { participant in
                     HStack(spacing: 5) {
-                        Text(participant.displayName)
+                        Text(viewModel.label(for: participant.userId))
                             .font(.system(.caption, design: .rounded, weight: .semibold))
                         Text("\(viewModel.progressByUser[participant.userId] ?? 0)/\(viewModel.deck?.count ?? 0)")
                             .font(.system(.caption, design: .rounded, weight: .bold))
@@ -120,12 +120,22 @@ struct RoomSessionView: View {
                     Circle()
                         .fill(Color(.systemGreen))
                         .frame(width: 8, height: 8)
-                    Text(participant.displayName)
+                    Text(viewModel.label(for: participant.userId))
                         .font(.system(.body, design: .rounded, weight: .semibold))
                     if participant.isHost {
                         Image(systemName: "crown.fill")
                             .font(.caption)
                             .foregroundStyle(Color(.systemYellow))
+                    }
+                    if participant.userId == viewModel.myUserId {
+                        // With duplicates on screen, "which one am I" needs
+                        // an answer too.
+                        Text("you")
+                            .font(.system(.caption2, design: .rounded, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color(.tertiarySystemFill), in: Capsule())
                     }
                     Spacer()
                     if viewModel.isHost && !participant.isHost {

@@ -32,6 +32,36 @@ final class RoomSessionViewModel {
     }
 
     var isHost: Bool { room.hostId == myUserId }
+
+    /// userId → label to render. Display names are labels, not identity
+    /// (userId is identity — duplicates break nothing functionally), so
+    /// name collisions are resolved at DISPLAY time: duplicates get a
+    /// join-order suffix ("Alex 1", "Alex 2"). Numbering by roster order
+    /// makes every device render the SAME labels, because the roster
+    /// order is server-authoritative — "kick Alex 2" means the same
+    /// person on every screen.
+    var displayLabels: [String: String] {
+        var occurrences: [String: Int] = [:]
+        for participant in room.participants {
+            occurrences[participant.displayName, default: 0] += 1
+        }
+        var counters: [String: Int] = [:]
+        var labels: [String: String] = [:]
+        for participant in room.participants {
+            if occurrences[participant.displayName, default: 0] > 1 {
+                let n = counters[participant.displayName, default: 0] + 1
+                counters[participant.displayName] = n
+                labels[participant.userId] = "\(participant.displayName) \(n)"
+            } else {
+                labels[participant.userId] = participant.displayName
+            }
+        }
+        return labels
+    }
+
+    func label(for userId: String) -> String {
+        displayLabels[userId] ?? "?"
+    }
     /// The round is on — show the deck. Strictly ACTIVE: a terminal state
     /// also leaves LOBBY, but means "go home", not "start playing".
     var isActive: Bool { room.state == .active }
