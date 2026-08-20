@@ -1,8 +1,21 @@
 # Local dev infrastructure. Requires Docker (OrbStack / Docker Desktop).
 #
-# Phase 2: Postgres only. Redis deliberately arrives with phase 3
-# (realtime) — no premature infrastructure.
+# Postgres: the durable store. Redis: live-session fabric — arrived in
+# phase 3 exactly when the cross-process fan-out lab demanded it, and
+# deliberately has NO volume: everything in it must be rebuildable from
+# Postgres + reconnect snapshots. If losing Redis would lose facts, the
+# facts are stored in the wrong place.
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     environment:

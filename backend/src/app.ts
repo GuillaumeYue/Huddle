@@ -1,6 +1,7 @@
 import express from "express";
 import { isDatabaseUp } from "./db.js";
 import { devRouter } from "./dev.js";
+import { isRedisUp } from "./redis.js";
 import { roomsRouter } from "./rooms.js";
 
 /**
@@ -15,13 +16,15 @@ export function createApp(): express.Express {
   app.use(express.json());
 
   app.get("/health", async (_req, res) => {
-    const dbUp = await isDatabaseUp();
+    const [dbUp, redisUp] = await Promise.all([isDatabaseUp(), isRedisUp()]);
+    const ok = dbUp && redisUp;
     // 503 when a dependency is down: deploy platforms and load balancers
     // read the status code, not the body. "ok with a sad body" would keep
     // routing traffic to an instance that can't serve it.
-    res.status(dbUp ? 200 : 503).json({
-      status: dbUp ? "ok" : "degraded",
+    res.status(ok ? 200 : 503).json({
+      status: ok ? "ok" : "degraded",
       db: dbUp ? "up" : "down",
+      redis: redisUp ? "up" : "down",
       uptimeSeconds: Math.round(process.uptime()),
     });
   });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { makeProgressEvent, makeRoomStateEvent } from "./live.js";
+import { makeProgressEvent, makeRoomStateEvent } from "./liveEvents.js";
 import type { RoomPayload } from "./roomsData.js";
 
 /**

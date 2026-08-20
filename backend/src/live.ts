@@ -2,74 +2,58 @@ import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { pool } from "./db.js";
 import { acceptsSwipes, isRoomState, isTerminal } from "./domain/roomState.js";
-import { getRoomPayload, type RoomPayload } from "./roomsData.js";
+import {
+  makeProgressEvent, makeRoomStateEvent, type LiveEvent,
+} from "./liveEvents.js";
+import { redisPub, redisSub } from "./redis.js";
+import { getRoomPayload } from "./roomsData.js";
 
 /**
- * The live (server-push) half of the protocol.
+ * The live (server-push) half of the protocol — multi-process edition.
  *
- * Transport rules, matching the architecture notes:
- * - REST stays the COMMAND channel (mutations, with real status codes).
- * - ws is the EVENT channel: after a successful mutation the server
- *   broadcasts a full room snapshot to everyone connected to that room.
- * - Full snapshots, not deltas: the lobby is small, and "replace your
- *   whole copy with mine" is the least bug-prone reconciliation there is.
- *   Deltas are an optimization to earn later, not a starting point.
- * - Every event carries an extensible `type` (invariant 3) and a `seq`.
- *   `seq` is scoped to ONE connection session: the on-connect snapshot
- *   resets the client's world, so clients compare seq only within a
- *   connection, never across reconnects.
+ * Lab 2's split-brain (demo in history: two processes, one room,
+ * consistent database, broken fan-out) is fixed by splitting broadcast
+ * into two halves with Redis pub/sub as the cross-process channel:
+ *
+ *   publish side  — whichever process performs a mutation builds the
+ *                   event, INCRs the room's seq (Redis atomic counter:
+ *                   one global ordering authority per room, replacing
+ *                   the old per-process counter), and PUBLISHes to
+ *                   room:{id};
+ *   deliver side  — EVERY process subscribed to that room hands the
+ *                   message to its own local sockets, and applies
+ *                   eviction/terminal handling to the connections it
+ *                   owns.
+ *
+ * Out-of-order note: concurrent publishers can interleave INCR and
+ * PUBLISH so a lower seq may arrive after a higher one. The client's
+ * seq guard (only accept seq > last) simply drops the stale one — for
+ * full snapshots that is the correct outcome, and PROGRESS is healed
+ * by snapshot completeness. Ordering discipline lives at the edges,
+ * not in the middle.
  */
 
-export interface SwipeProgress {
-  userId: string;
-  completed: number;
-  deckSize: number;
-}
-
-export type LiveEvent =
-  | { type: "ROOM_STATE"; seq: number; room: RoomPayload }
-  | { type: "PROGRESS"; seq: number; progress: SwipeProgress };
-
-/** Pure builders — unit-tested against the shared cross-language fixtures. */
-export function makeRoomStateEvent(seq: number, room: RoomPayload): LiveEvent {
-  return { type: "ROOM_STATE", seq, room };
-}
-
-export function makeProgressEvent(seq: number, progress: SwipeProgress): LiveEvent {
-  return { type: "PROGRESS", seq, progress };
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Live-state keys are hygiene-TTL'd: if a room dies silently (no
+ *  terminal broadcast, nobody connected) its counter still evaporates.
+ *  Redis holds nothing that can't be rebuilt — by design. */
+const SEQ_TTL_SECONDS = 24 * 60 * 60;
+
+const roomChannel = (roomId: string): string => `room:${roomId}`;
+const seqKey = (roomId: string): string => `room:${roomId}:seq`;
 
 interface LiveConn {
   ws: WebSocket;
   userId: string;
 }
 
-interface RoomChannel {
-  /** Monotonic per room while it lives; survives an empty connection set
-   *  so a rejoining client can never observe seq going backwards. */
-  seq: number;
-  conns: Set<LiveConn>;
-}
-
 class RoomHub {
-  /** In-memory, single-node — deliberately. This registry IS the naive
-   *  version of the cross-instance fan-out lab: run two server processes
-   *  and a room's members split across them stop hearing each other.
-   *  Redis pub/sub arrives to fix exactly that, later in phase 3. */
-  private channels = new Map<string, RoomChannel>();
+  /** Local sockets only. The cross-process picture lives in Redis. */
+  private channels = new Map<string, Set<LiveConn>>();
   private wss = new WebSocketServer({ noServer: true });
+  private delivering = false;
 
-  /** Hook the HTTP server's upgrade path: ws://…/rooms/:id/live?userId=
-   *
-   *  Authorization runs BEFORE the handshake completes. The tempting
-   *  alternative — finish the handshake, then check membership, then
-   *  attach listeners — leaves an await gap between "socket open" and
-   *  "someone listening": an eager client (our outbox drains the moment
-   *  the connection opens) can land messages in that gap, and an
-   *  EventEmitter with no listener drops them on the floor. Verify
-   *  first, and attach listeners synchronously at open. */
   attach(server: Server): void {
     server.on("upgrade", (req, socket, head) => {
       const url = new URL(req.url ?? "", "http://localhost");
@@ -81,9 +65,8 @@ class RoomHub {
         return;
       }
       void (async () => {
-        // Connection-as-identity: (roomId, userId) checked against the
-        // db. Auth is deferred, so userId is a query param; SIWA later
-        // replaces this with a token — nothing below changes.
+        // Membership verified BEFORE the handshake completes (the
+        // listener-gap lesson): the socket never opens unauthorized.
         const { rows } = await pool.query(
           `SELECT 1 FROM room_participants rp
             JOIN rooms r ON r.id = rp.room_id
@@ -105,21 +88,14 @@ class RoomHub {
     });
   }
 
-  /** Synchronous on purpose: every listener is attached before this
-   *  function returns, i.e. before anything else can run — no await gap
-   *  for early uplink messages to fall into. */
+  /** ws listeners attach before ANY await — kept from the lab verdict. */
   private accept(ws: WebSocket, roomId: string, userId: string): void {
-    let channel = this.channels.get(roomId);
-    if (!channel) {
-      channel = { seq: 0, conns: new Set() };
-      this.channels.set(roomId, channel);
-    }
     const conn: LiveConn = { ws, userId };
-    channel.conns.add(conn);
     ws.on("close", () => {
-      channel.conns.delete(conn);
-      // The channel skeleton (seq) is kept until the room ends — see
-      // RoomChannel.seq. Cleared in broadcast on terminal state.
+      const conns = this.channels.get(roomId);
+      if (!conns) return;
+      conns.delete(conn);
+      if (conns.size === 0) void this.releaseChannel(roomId);
     });
     ws.on("message", (data) => {
       void this.handleMessage(conn, roomId, String(data)).catch((err) => {
@@ -127,24 +103,138 @@ class RoomHub {
       });
     });
 
-    // Snapshot on connect: the client needs no initial GET and no
-    // cross-reconnect seq bookkeeping — this message defines its world.
-    // (A mutation racing this fetch can deliver the same state twice
-    // with adjacent seqs; snapshot-replace semantics make that benign.)
     void (async () => {
+      // Order is the correctness argument: SUBSCRIBE first, snapshot
+      // second. Anything published before the subscription is inside
+      // the snapshot; anything after it is delivered. No gap.
+      const conns = await this.claimChannel(roomId);
+      if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+        if (conns.size === 0) await this.releaseChannel(roomId);
+        return; // died during setup; don't strand a zombie in the set
+      }
+      conns.add(conn);
       const room = await getRoomPayload(roomId);
       if (room && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(makeRoomStateEvent(++channel.seq, room)));
+        const seq = await this.nextSeq(roomId);
+        ws.send(JSON.stringify(makeRoomStateEvent(seq, room)));
       }
-    })().catch((err) => console.error("[live] snapshot failed:", err));
+    })().catch((err) => {
+      console.error("[live] accept failed:", err);
+      ws.close(1011, "internal error");
+    });
   }
 
-  /**
-   * Uplink handler — the first ws-borne command. Same tolerance rules as
-   * the client's receiver: unknown types and malformed frames are
-   * dropped, never fatal. The wire is at-least-once (clients may resend);
-   * exactly-once-ness lives in the swipes PRIMARY KEY, not up here.
-   */
+  // MARK: publish side
+
+  /** Called by the REST layer after every successful mutation — from
+   *  whichever process handled it. No local-connection check: the
+   *  members may all be on OTHER processes (that was the bug). */
+  async broadcastRoom(roomId: string): Promise<void> {
+    const room = await getRoomPayload(roomId);
+    if (!room) return;
+    const seq = await this.nextSeq(roomId);
+    await redisPub.publish(
+      roomChannel(roomId), JSON.stringify(makeRoomStateEvent(seq, room)));
+  }
+
+  private async broadcastProgress(roomId: string, userId: string): Promise<void> {
+    const { rows } = await pool.query<{ completed: string; deck_size: string }>(
+      `SELECT
+         (SELECT count(*) FROM swipes
+           WHERE room_id = $1 AND user_id = $2)      AS completed,
+         (SELECT count(*) FROM room_candidates
+           WHERE room_id = $1)                       AS deck_size`,
+      [roomId, userId],
+    );
+    const seq = await this.nextSeq(roomId);
+    await redisPub.publish(roomChannel(roomId), JSON.stringify(
+      makeProgressEvent(seq, {
+        userId,
+        completed: Number(rows[0]?.completed ?? 0),
+        deckSize: Number(rows[0]?.deck_size ?? 0),
+      })));
+  }
+
+  /** The room's ordering authority: one atomic counter in Redis,
+   *  shared by every process. First appearance of the atomic-counter
+   *  tool that phase 4's tally is built on. */
+  private async nextSeq(roomId: string): Promise<number> {
+    const seq = await redisPub.incr(seqKey(roomId));
+    void redisPub.expire(seqKey(roomId), SEQ_TTL_SECONDS);
+    return seq;
+  }
+
+  // MARK: deliver side
+
+  private async claimChannel(roomId: string): Promise<Set<LiveConn>> {
+    let conns = this.channels.get(roomId);
+    if (!conns) {
+      conns = new Set();
+      this.channels.set(roomId, conns);
+      this.ensureDelivering();
+      await redisSub.subscribe(roomChannel(roomId));
+    }
+    return conns;
+  }
+
+  private async releaseChannel(roomId: string): Promise<void> {
+    this.channels.delete(roomId);
+    await redisSub.unsubscribe(roomChannel(roomId)).catch((err) => {
+      console.error("[live] unsubscribe failed:", err);
+    });
+  }
+
+  private ensureDelivering(): void {
+    if (this.delivering) return;
+    this.delivering = true;
+    redisSub.on("message", (channel: string, message: string) => {
+      this.deliverLocal(channel.slice("room:".length), message);
+    });
+  }
+
+  /** Fan the published event out to THIS process's sockets, and apply
+   *  membership eviction / terminal shutdown to the connections this
+   *  process owns — every process runs this for its own people. */
+  private deliverLocal(roomId: string, message: string): void {
+    const conns = this.channels.get(roomId);
+    if (!conns || conns.size === 0) return;
+
+    let event: LiveEvent;
+    try {
+      event = JSON.parse(message) as LiveEvent;
+    } catch {
+      return;
+    }
+
+    const memberIds = event.type === "ROOM_STATE"
+      ? new Set(event.room.participants.map((p) => p.userId))
+      : null;
+
+    for (const conn of [...conns]) {
+      if (conn.ws.readyState === WebSocket.OPEN) {
+        conn.ws.send(message);
+      }
+      // Evicted AFTER sending: a kicked guest's last event is the state
+      // in which they no longer appear — their signal to leave.
+      if (memberIds && !memberIds.has(conn.userId)) {
+        conn.ws.close(4401, "removed from room");
+        conns.delete(conn);
+      }
+    }
+
+    if (event.type === "ROOM_STATE" && isTerminal(event.room.state)) {
+      for (const conn of [...conns]) {
+        conn.ws.close(1000, "room ended");
+      }
+      void this.releaseChannel(roomId);
+      void redisPub.del(seqKey(roomId));
+    }
+  }
+
+  // MARK: uplink
+
+  /** Unchanged by the lab: uplink is per-connection, not fan-out. The
+   *  wire stays at-least-once; exactly-once lives in the swipes PK. */
   private async handleMessage(
     conn: LiveConn, roomId: string, raw: string,
   ): Promise<void> {
@@ -159,9 +249,6 @@ class RoomHub {
     if (typeof msg.candidateId !== "string") return;
     if (msg.decision !== "YES" && msg.decision !== "NO") return;
 
-    // The swipe gate: only ACTIVE accepts input. This is where
-    // "REVEALING is input-closed" stops being a comment in the state
-    // machine and starts rejecting real late packets.
     const { rows } = await pool.query<{ state: string }>(
       "SELECT state FROM rooms WHERE id = $1 AND closed_at IS NULL",
       [roomId],
@@ -179,66 +266,10 @@ class RoomHub {
       );
       inserted = rowCount === 1;
     } catch {
-      // FK violation: candidate not in this room's deck — a buggy or
-      // hostile client; drop it (integrity was declared in the schema).
-      return;
+      return; // FK violation: candidate not in this room's deck
     }
     if (inserted) {
       await this.broadcastProgress(roomId, conn.userId);
-    }
-  }
-
-  private async broadcastProgress(roomId: string, userId: string): Promise<void> {
-    const channel = this.channels.get(roomId);
-    if (!channel || channel.conns.size === 0) return;
-
-    const { rows } = await pool.query<{ completed: string; deck_size: string }>(
-      `SELECT
-         (SELECT count(*) FROM swipes
-           WHERE room_id = $1 AND user_id = $2)      AS completed,
-         (SELECT count(*) FROM room_candidates
-           WHERE room_id = $1)                       AS deck_size`,
-      [roomId, userId],
-    );
-    const event = makeProgressEvent(++channel.seq, {
-      userId,
-      completed: Number(rows[0]?.completed ?? 0),
-      deckSize: Number(rows[0]?.deck_size ?? 0),
-    });
-    const message = JSON.stringify(event);
-    for (const conn of channel.conns) {
-      if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(message);
-    }
-  }
-
-  /** Called by the REST layer after every successful mutation. */
-  async broadcastRoom(roomId: string): Promise<void> {
-    const channel = this.channels.get(roomId);
-    if (!channel || channel.conns.size === 0) return;
-
-    const room = await getRoomPayload(roomId);
-    if (!room) return;
-
-    const message = JSON.stringify(makeRoomStateEvent(++channel.seq, room));
-    const memberIds = new Set(room.participants.map((p) => p.userId));
-
-    for (const conn of [...channel.conns]) {
-      if (conn.ws.readyState === WebSocket.OPEN) {
-        conn.ws.send(message);
-      }
-      // Evicted AFTER sending: a kicked guest's last event is the state
-      // in which they no longer appear — their signal to leave.
-      if (!memberIds.has(conn.userId)) {
-        conn.ws.close(4401, "removed from room");
-        channel.conns.delete(conn);
-      }
-    }
-
-    if (isTerminal(room.state)) {
-      for (const conn of [...channel.conns]) {
-        conn.ws.close(1000, "room ended");
-      }
-      this.channels.delete(roomId);
     }
   }
 }
