@@ -1,25 +1,35 @@
 /**
- * Lab 3 — presence. Two spawned processes, shared Postgres + Redis.
+ * Lab 3 — presence as a LEASE. Two spawned processes, shared
+ * Postgres + Redis, time shrunk via env (TTL 3s, heartbeat 1s).
  *
- * NAIVE PHASE (current): presence flips on socket open/close events
- * only. Clean paths work — and the final check DEMONSTRATES THE GHOST:
- * SIGKILL the process holding Bob's socket, and Bob stays "online"
- * forever, because a killed process sends no close events. The close
- * event is a courtesy, not a guarantee.
- *
- * Exits 0 while the ghost is observed; the lease fix flips this file
- * into asserting convergence instead.
+ * Clean paths flip presence immediately via close events; the dirty
+ * path — SIGKILL the process holding Bob's socket, so no close event
+ * ever fires — converges anyway: Bob's lease stops being renewed,
+ * expires, and the surviving process's sweeper notices and broadcasts.
+ * The ghost this replaces is in history at 059bef5.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
 
 const A_PORT = 3100;
 const B_PORT = 3101;
+const TEST_TTL_S = 3;
+const TEST_HEARTBEAT_MS = 1000;
 
 async function startServer(port: number): Promise<ChildProcess> {
-  const child = spawn("npx", ["tsx", "src/index.ts"], {
-    env: { ...process.env, PORT: String(port) },
-    stdio: "ignore",
+  // node --import tsx, NOT `npx tsx`: npx wraps the real server in a
+  // parent process, and SIGKILL — unlike SIGTERM — cannot be forwarded;
+  // killing the wrapper orphans the actual server, which then keeps
+  // renewing leases and haunts the very test that tries to kill it.
+  // (Found the hard way: the "dead" process B stayed alive on :3101.)
+  const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      PRESENCE_TTL_SECONDS: String(TEST_TTL_S),
+      HEARTBEAT_MS: String(TEST_HEARTBEAT_MS),
+    },
+    stdio: process.env["DEBUG_SPAWN"] ? "inherit" : "ignore",
   });
   for (let i = 0; i < 60; i++) {
     try {
@@ -117,23 +127,30 @@ try {
   check("clean close flips offline immediately",
     flag(await aliceWs.until((r) => flag(r, bob.id) === false), bob.id) === false);
 
+  console.log("    … bob reconnecting to B");
   const bobWs2 = connect(B_PORT, room.id, bob.id);
   await bobWs2.next();
+  console.log("    … bob got his snapshot");
   await aliceWs.until((r) => flag(r, bob.id) === true);
+  console.log("    … alice sees bob online again");
 
-  // The dirty path: no close event will ever come.
+  // The dirty path: no close event will ever come. The lease expires
+  // on its own, and A's sweeper broadcasts the change — Alice LEARNS
+  // of the death through time, not through a message.
   serverB.kill("SIGKILL");
   serverB = null;
-  await new Promise((r) => setTimeout(r, 4000));
+  const observed = await aliceWs.until(
+    (r) => flag(r, bob.id) === false,
+    (TEST_TTL_S + 3) * 1000,
+  );
+  check("SIGKILL with no close event: lease expiry + sweeper broadcast reach Alice",
+    flag(observed, bob.id) === false);
+
   const probe = await (await fetch(`http://localhost:${A_PORT}/rooms/${room.id}`)).json() as R;
-  const ghost = flag(probe, bob.id) === true;
-  if (ghost) {
-    console.log("break observed  GHOST: process B SIGKILLed 4s ago, Bob still 'online'");
-    console.log("\nclose events are a courtesy, not a guarantee — presence must be a LEASE.");
-  } else {
-    console.error("NOT BROKEN (unexpected for naive presence)");
-    process.exit(1);
-  }
+  check("REST probe agrees: the ghost is gone", flag(probe, bob.id) === false);
+
+  console.log("\npresence is a lease: liveness re-earned every heartbeat, " +
+    "death discovered by expiry — no notification required.");
 } finally {
   serverA.kill();
   serverB?.kill();

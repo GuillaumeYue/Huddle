@@ -40,19 +40,42 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *  Redis holds nothing that can't be rebuilt — by design. */
 const SEQ_TTL_SECONDS = 24 * 60 * 60;
 
+/**
+ * Presence is a LEASE, not a flag (the SIGKILL ghost, in history at
+ * 059bef5, is what a flag gets you). Every heartbeat re-earns the
+ * lease for connections that answered the last ping; a process that
+ * dies stops renewing and its users expire off within TTL — no death
+ * notification required. Env-tunable so tests can shrink time.
+ */
+const PRESENCE_TTL_SECONDS = Number(process.env["PRESENCE_TTL_SECONDS"] ?? 40);
+const HEARTBEAT_MS = Number(process.env["HEARTBEAT_MS"] ?? 15_000);
+
 const roomChannel = (roomId: string): string => `room:${roomId}`;
 const seqKey = (roomId: string): string => `room:${roomId}:seq`;
 
 interface LiveConn {
   ws: WebSocket;
   userId: string;
+  /** Did this socket answer the last ping? ws-level liveness: a client
+   *  that vanished without FIN (dead battery, dropped WiFi) never
+   *  closes; the ping/pong probe is how we notice. */
+  isAlive: boolean;
+}
+
+interface Channel {
+  conns: Set<LiveConn>;
+  /** Last known presence signature — the sweeper broadcasts only when
+   *  it actually changes, so lease expiry becomes visible to clients
+   *  without spamming identical snapshots. */
+  presenceSig: string;
 }
 
 class RoomHub {
   /** Local sockets only. The cross-process picture lives in Redis. */
-  private channels = new Map<string, Set<LiveConn>>();
+  private channels = new Map<string, Channel>();
   private wss = new WebSocketServer({ noServer: true });
   private delivering = false;
+  private heartbeat: NodeJS.Timeout | null = null;
 
   attach(server: Server): void {
     server.on("upgrade", (req, socket, head) => {
@@ -90,20 +113,19 @@ class RoomHub {
 
   /** ws listeners attach before ANY await — kept from the lab verdict. */
   private accept(ws: WebSocket, roomId: string, userId: string): void {
-    const conn: LiveConn = { ws, userId };
+    const conn: LiveConn = { ws, userId, isAlive: true };
+    ws.on("pong", () => { conn.isAlive = true; });
     ws.on("close", () => {
-      const conns = this.channels.get(roomId);
-      if (!conns) return;
-      conns.delete(conn);
-      // NAIVE presence, deliberately: mark offline on the close event
-      // and trust it to arrive. A SIGKILLed process, a dead battery or
-      // a vanished WiFi never sends close — those users stay "online"
-      // forever. The demo script proves it; the lease fix follows.
+      const channel = this.channels.get(roomId);
+      if (!channel) return;
+      channel.conns.delete(conn);
+      // Clean closes flip presence immediately — the lease is the
+      // safety net for dirty deaths, not a replacement for good news.
       void (async () => {
         await redisPub.del(presenceKey(roomId, userId));
         await this.broadcastRoom(roomId);
       })().catch((err) => console.error("[live] presence off failed:", err));
-      if (conns.size === 0) void this.releaseChannel(roomId);
+      if (channel.conns.size === 0) void this.releaseChannel(roomId);
     });
     ws.on("message", (data) => {
       void this.handleMessage(conn, roomId, String(data)).catch((err) => {
@@ -115,15 +137,15 @@ class RoomHub {
       // Order is the correctness argument: SUBSCRIBE first, snapshot
       // second. Anything published before the subscription is inside
       // the snapshot; anything after it is delivered. No gap.
-      const conns = await this.claimChannel(roomId);
+      const channel = await this.claimChannel(roomId);
       if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
-        if (conns.size === 0) await this.releaseChannel(roomId);
+        if (channel.conns.size === 0) await this.releaseChannel(roomId);
         return; // died during setup; don't strand a zombie in the set
       }
-      conns.add(conn);
-      // Presence ON before the snapshot is built, so your own snapshot
-      // already shows you online; broadcast flips it for everyone else.
-      await redisPub.set(presenceKey(roomId, userId), "1");
+      channel.conns.add(conn);
+      // First lease grant, before the snapshot is built: your own
+      // snapshot already shows you online; the broadcast tells the rest.
+      await redisPub.set(presenceKey(roomId, userId), "1", "EX", PRESENCE_TTL_SECONDS);
       const room = await getRoomPayload(roomId);
       if (room && ws.readyState === WebSocket.OPEN) {
         const seq = await this.nextSeq(roomId);
@@ -134,6 +156,51 @@ class RoomHub {
       console.error("[live] accept failed:", err);
       ws.close(1011, "internal error");
     });
+  }
+
+  // MARK: heartbeat — the lease renewal loop
+
+  /** One interval per process. Each tick, for every local connection:
+   *  terminate sockets that didn't answer the last ping (half-open TCP
+   *  never closes itself), re-earn the presence lease for those that
+   *  did, and — the sweeper — re-read presence and broadcast if it
+   *  changed, so leases that EXPIRED (a dead process's users) become
+   *  visible to everyone without any death notification. */
+  private ensureHeartbeat(): void {
+    if (this.heartbeat) return;
+    this.heartbeat = setInterval(() => {
+      void this.heartbeatTick().catch((err) =>
+        console.error("[live] heartbeat failed:", err));
+    }, HEARTBEAT_MS);
+    this.heartbeat.unref();
+  }
+
+  private async heartbeatTick(): Promise<void> {
+    for (const [roomId, channel] of this.channels) {
+      const renewals = redisPub.pipeline();
+      for (const conn of [...channel.conns]) {
+        if (!conn.isAlive) {
+          conn.ws.terminate(); // fires 'close' → DEL + broadcast path
+          continue;
+        }
+        conn.isAlive = false;
+        conn.ws.ping();
+        renewals.set(presenceKey(roomId, conn.userId), "1", "EX", PRESENCE_TTL_SECONDS);
+      }
+      await renewals.exec();
+
+      // Sweeper: presence changed without any event on this process
+      // (typically: another process died and its leases expired)?
+      const room = await getRoomPayload(roomId);
+      if (!room) continue;
+      const sig = room.participants.map((p) => `${p.userId}:${p.connected}`).join("|");
+      if (sig !== channel.presenceSig) {
+        channel.presenceSig = sig;
+        const seq = await this.nextSeq(roomId);
+        await redisPub.publish(
+          roomChannel(roomId), JSON.stringify(makeRoomStateEvent(seq, room)));
+      }
+    }
   }
 
   // MARK: publish side
@@ -178,15 +245,16 @@ class RoomHub {
 
   // MARK: deliver side
 
-  private async claimChannel(roomId: string): Promise<Set<LiveConn>> {
-    let conns = this.channels.get(roomId);
-    if (!conns) {
-      conns = new Set();
-      this.channels.set(roomId, conns);
+  private async claimChannel(roomId: string): Promise<Channel> {
+    let channel = this.channels.get(roomId);
+    if (!channel) {
+      channel = { conns: new Set(), presenceSig: "" };
+      this.channels.set(roomId, channel);
       this.ensureDelivering();
+      this.ensureHeartbeat();
       await redisSub.subscribe(roomChannel(roomId));
     }
-    return conns;
+    return channel;
   }
 
   private async releaseChannel(roomId: string): Promise<void> {
@@ -208,8 +276,8 @@ class RoomHub {
    *  membership eviction / terminal shutdown to the connections this
    *  process owns — every process runs this for its own people. */
   private deliverLocal(roomId: string, message: string): void {
-    const conns = this.channels.get(roomId);
-    if (!conns || conns.size === 0) return;
+    const channel = this.channels.get(roomId);
+    if (!channel || channel.conns.size === 0) return;
 
     let event: LiveEvent;
     try {
@@ -218,11 +286,18 @@ class RoomHub {
       return;
     }
 
+    if (event.type === "ROOM_STATE") {
+      // Keep the sweeper's baseline current so it only speaks when it
+      // has news the room hasn't already heard.
+      channel.presenceSig = event.room.participants
+        .map((p) => `${p.userId}:${p.connected}`).join("|");
+    }
+
     const memberIds = event.type === "ROOM_STATE"
       ? new Set(event.room.participants.map((p) => p.userId))
       : null;
 
-    for (const conn of [...conns]) {
+    for (const conn of [...channel.conns]) {
       if (conn.ws.readyState === WebSocket.OPEN) {
         conn.ws.send(message);
       }
@@ -230,12 +305,12 @@ class RoomHub {
       // in which they no longer appear — their signal to leave.
       if (memberIds && !memberIds.has(conn.userId)) {
         conn.ws.close(4401, "removed from room");
-        conns.delete(conn);
+        channel.conns.delete(conn);
       }
     }
 
     if (event.type === "ROOM_STATE" && isTerminal(event.room.state)) {
-      for (const conn of [...conns]) {
+      for (const conn of [...channel.conns]) {
         conn.ws.close(1000, "room ended");
       }
       void this.releaseChannel(roomId);
