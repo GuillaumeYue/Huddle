@@ -32,12 +32,14 @@ test("makeRoomStateEvent produces exactly the shared fixture", () => {
         displayName: "Alice",
         isHost: true,
         completedCount: 7,
+        connected: true,
       },
       {
         userId: "07dd9958-e746-4654-851d-8061147c8e7c",
         displayName: "Bob",
         isHost: false,
         completedCount: 3,
+        connected: false,
       },
     ],
     candidates: [

@@ -36,6 +36,8 @@ struct RoomParticipantDTO: Decodable, Identifiable, Hashable {
     /// PROGRESS deltas accelerate this; the snapshot is the truth that
     /// survives your own disconnections.
     let completedCount: Int
+    /// Live-socket presence, as the server currently believes it.
+    let connected: Bool
 
     var id: String { userId }
 }

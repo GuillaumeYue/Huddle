@@ -35,9 +35,11 @@ struct WireContractTests {
         #expect(room.participants[0].displayName == "Alice")
         #expect(room.participants[0].isHost)
         #expect(room.participants[0].completedCount == 7)
+        #expect(room.participants[0].connected)
         #expect(room.participants[1].displayName == "Bob")
         #expect(!room.participants[1].isHost)
         #expect(room.participants[1].completedCount == 3)
+        #expect(!room.participants[1].connected)
 
         let candidates = try #require(room.candidates)
         #expect(candidates.count == 2)

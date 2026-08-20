@@ -6,7 +6,7 @@ import {
   makeProgressEvent, makeRoomStateEvent, type LiveEvent,
 } from "./liveEvents.js";
 import { redisPub, redisSub } from "./redis.js";
-import { getRoomPayload } from "./roomsData.js";
+import { getRoomPayload, presenceKey } from "./roomsData.js";
 
 /**
  * The live (server-push) half of the protocol — multi-process edition.
@@ -95,6 +95,14 @@ class RoomHub {
       const conns = this.channels.get(roomId);
       if (!conns) return;
       conns.delete(conn);
+      // NAIVE presence, deliberately: mark offline on the close event
+      // and trust it to arrive. A SIGKILLed process, a dead battery or
+      // a vanished WiFi never sends close — those users stay "online"
+      // forever. The demo script proves it; the lease fix follows.
+      void (async () => {
+        await redisPub.del(presenceKey(roomId, userId));
+        await this.broadcastRoom(roomId);
+      })().catch((err) => console.error("[live] presence off failed:", err));
       if (conns.size === 0) void this.releaseChannel(roomId);
     });
     ws.on("message", (data) => {
@@ -113,11 +121,15 @@ class RoomHub {
         return; // died during setup; don't strand a zombie in the set
       }
       conns.add(conn);
+      // Presence ON before the snapshot is built, so your own snapshot
+      // already shows you online; broadcast flips it for everyone else.
+      await redisPub.set(presenceKey(roomId, userId), "1");
       const room = await getRoomPayload(roomId);
       if (room && ws.readyState === WebSocket.OPEN) {
         const seq = await this.nextSeq(roomId);
         ws.send(JSON.stringify(makeRoomStateEvent(seq, room)));
       }
+      await this.broadcastRoom(roomId);
     })().catch((err) => {
       console.error("[live] accept failed:", err);
       ws.close(1011, "internal error");

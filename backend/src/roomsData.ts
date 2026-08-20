@@ -1,5 +1,9 @@
 import { pool } from "./db.js";
 import { isRoomState, type RoomState } from "./domain/roomState.js";
+import { redisPub } from "./redis.js";
+
+export const presenceKey = (roomId: string, userId: string): string =>
+  `presence:${roomId}:${userId}`;
 
 /**
  * Row types + the wire-payload translator, extracted from rooms.ts so
@@ -48,6 +52,10 @@ export interface RoomPayload {
      *  every delta-carried fact must also live in the snapshot — deltas
      *  are an accelerator, the snapshot is the truth. */
     completedCount: number;
+    /** Live-socket presence, read from Redis. Affects UX and (later)
+     *  the inactivity timeout — NEVER the tally denominator; that
+     *  decision is the "definition of present" fork. */
+    connected: boolean;
   }[];
   /** The shared deck; present from ACTIVE onward, absent in LOBBY. */
   candidates?: {
@@ -78,16 +86,24 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
        FROM room_candidates WHERE room_id = $1 ORDER BY position`,
     [room.id],
   );
+  // Presence lives in Redis (live state, rebuildable); one pipelined
+  // EXISTS per participant.
+  const flags = participants.length === 0 ? [] :
+    await redisPub.pipeline(
+      participants.map((p) => ["exists", presenceKey(room.id, p.user_id)]),
+    ).exec();
+
   const payload: RoomPayload = {
     id: room.id,
     joinCode: room.join_code,
     hostId: room.host_id,
     state: room.state,
-    participants: participants.map((p) => ({
+    participants: participants.map((p, i) => ({
       userId: p.user_id,
       displayName: p.display_name,
       isHost: p.user_id === room.host_id,
       completedCount: Number(p.completed),
+      connected: Boolean(flags?.[i]?.[1]),
     })),
   };
   if (candidates.length > 0) {

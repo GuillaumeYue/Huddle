@@ -65,8 +65,10 @@ struct RoomSessionView: View {
                         Circle()
                             .fill(ParticipantColor.for(participant.userId))
                             .frame(width: 7, height: 7)
+                            .opacity(participant.connected ? 1 : 0.3)
                         Text(viewModel.label(for: participant.userId))
                             .font(.system(.caption, design: .rounded, weight: .semibold))
+                            .foregroundStyle(participant.connected ? .primary : .tertiary)
                         Text("\(viewModel.progressByUser[participant.userId] ?? 0)/\(viewModel.deck?.count ?? 0)")
                             .font(.system(.caption, design: .rounded, weight: .bold))
                             .monospacedDigit()
@@ -123,8 +125,15 @@ struct RoomSessionView: View {
                     Circle()
                         .fill(ParticipantColor.for(participant.userId))
                         .frame(width: 10, height: 10)
+                        .opacity(participant.connected ? 1 : 0.3)
                     Text(viewModel.label(for: participant.userId))
                         .font(.system(.body, design: .rounded, weight: .semibold))
+                        .foregroundStyle(participant.connected ? .primary : .secondary)
+                    if !participant.connected {
+                        Text("offline")
+                            .font(.system(.caption2, design: .rounded, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
                     if participant.isHost {
                         Image(systemName: "crown.fill")
                             .font(.caption)
