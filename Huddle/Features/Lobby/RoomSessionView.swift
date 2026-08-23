@@ -83,6 +83,11 @@ struct RoomSessionView: View {
             }
             .padding(.horizontal, 8)
             Spacer()
+            // Input-closed is not exit-closed: the server owns the reveal,
+            // but no screen is a dead end.
+            Button("Leave") { leave() }
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.secondary)
         }
         .padding(24)
         .toolbar(.hidden, for: .navigationBar)
@@ -115,6 +120,11 @@ struct RoomSessionView: View {
                 .font(.system(.subheadline, design: .rounded))
                 .foregroundStyle(.secondary)
             Spacer()
+            // Input-closed is not exit-closed: the server owns the reveal,
+            // but no screen is a dead end.
+            Button("Leave") { leave() }
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                .foregroundStyle(.secondary)
         }
         .padding(24)
         .toolbar(.hidden, for: .navigationBar)
