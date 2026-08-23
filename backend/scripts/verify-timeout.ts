@@ -15,7 +15,7 @@ const INACTIVITY_MS = 2000;
 
 async function startServer(port: number): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-    env: { ...process.env, PORT: String(port), INACTIVITY_MS: String(INACTIVITY_MS),
+    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PORT: String(port), INACTIVITY_MS: String(INACTIVITY_MS),
       HEARTBEAT_MS: "1000", TIMER_TICK_MS: "500", REVEAL_MS: "200", PRESENCE_TTL_SECONDS: "3" },
     stdio: process.env["DEBUG_SPAWN"] ? "inherit" : "ignore",
   });

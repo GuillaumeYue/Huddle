@@ -25,6 +25,7 @@ async function startServer(port: number): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     env: {
       ...process.env,
+      REDIS_URL: "redis://localhost:6379/1", // isolated from the dev cluster
       PORT: String(port),
       PRESENCE_TTL_SECONDS: String(TEST_TTL_S),
       HEARTBEAT_MS: String(TEST_HEARTBEAT_MS),

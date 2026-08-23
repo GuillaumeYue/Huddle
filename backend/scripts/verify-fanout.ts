@@ -18,7 +18,7 @@ const B_PORT = 3101;
 async function startServer(port: number): Promise<ChildProcess> {
   // Single process (no npx wrapper) so signals reach the real server.
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PORT: String(port) },
     stdio: "ignore",
   });
   for (let i = 0; i < 60; i++) {
