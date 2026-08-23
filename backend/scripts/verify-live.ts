@@ -212,5 +212,16 @@ const closes = await Promise.all([
 check("terminal state closes all sockets with 1000",
   closes.every((c) => c === 1000));
 
+// 14. A member who comes back AFTER the room ended (backgrounded app,
+// dead battery) must still get the verdict: replay mode — final
+// snapshot, then a clean hangup. Strangers stay out.
+const late = connect(room.id, bob.id);
+const verdict = await late.until((e) => e.type === "ROOM_STATE");
+check("returning member of a closed room receives the final snapshot",
+  verdict.room?.state === "NO_RESULT" || verdict.room?.state === "MATCHED");
+check("…and is then hung up cleanly", (await late.waitClosed()) === 1000);
+const strangerLate = connect(room.id, (await post<User>("/dev/users", { displayName: "Eve" })).id);
+check("non-member of a closed room is still refused", await strangerLate.wasRejected());
+
 console.log("\nall live-layer checks passed");
 process.exit(0);

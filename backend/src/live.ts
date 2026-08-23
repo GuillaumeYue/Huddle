@@ -91,24 +91,49 @@ class RoomHub {
       void (async () => {
         // Membership verified BEFORE the handshake completes (the
         // listener-gap lesson): the socket never opens unauthorized.
-        const { rows } = await pool.query(
-          `SELECT 1 FROM room_participants rp
-            JOIN rooms r ON r.id = rp.room_id
-           WHERE rp.room_id = $1 AND rp.user_id = $2 AND r.closed_at IS NULL`,
+        // Members of a CLOSED room are still let in — into replay mode:
+        // they get the final snapshot, then a clean hangup. Locking the
+        // door on closed rooms (the first version did) meant a member
+        // who backgrounded the app during the round came back to a 403
+        // loop and never saw the verdict — the snapshot-completeness
+        // rule with a hole exactly where it mattered most.
+        const { rows } = await pool.query<{ closed: boolean }>(
+          `SELECT (r.closed_at IS NOT NULL) AS closed
+             FROM room_participants rp
+             JOIN rooms r ON r.id = rp.room_id
+            WHERE rp.room_id = $1 AND rp.user_id = $2`,
           [roomId, userId],
         );
-        if (rows.length === 0) {
+        const membership = rows[0];
+        if (!membership) {
           socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
           socket.destroy();
           return;
         }
         this.wss.handleUpgrade(req, socket, head, (ws) => {
-          this.accept(ws, roomId, userId);
+          if (membership.closed) this.replayEnded(ws, roomId);
+          else this.accept(ws, roomId, userId);
         });
       })().catch((err) => {
         console.error("[live] upgrade failed:", err);
         socket.destroy();
       });
+    });
+  }
+
+  /** A returning member of a finished room: serve the verdict, hang up.
+   *  No channel, no presence lease — the room is history, not live. */
+  private replayEnded(ws: WebSocket, roomId: string): void {
+    void (async () => {
+      const room = await getRoomPayload(roomId);
+      if (room && ws.readyState === WebSocket.OPEN) {
+        const seq = await this.nextSeq(roomId);
+        ws.send(JSON.stringify(makeRoomStateEvent(seq, room)));
+      }
+      ws.close(1000, "room ended");
+    })().catch((err) => {
+      console.error("[live] replay failed:", err);
+      ws.close(1011, "internal error");
     });
   }
 
