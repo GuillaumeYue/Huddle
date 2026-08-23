@@ -7,11 +7,13 @@ import { pool } from "./db.js";
  * later) and may be attempted by several processes at once. It must
  * run exactly once per round.
  *
- * NAIVE VERSION, on purpose: look-then-act. Read the state, see
- * ACTIVE, proceed. Two concurrent settlers both see ACTIVE, both tally,
- * both pick a winner, both direct the reveal — the demo script shows
- * two REVEALs and, with a multi-way match, two DIFFERENT winners
- * announced for one dinner. The CAS fix follows.
+ * Exactly-once by CAS (the naive look-then-act version is in history:
+ * 4/5 trials double-settled, one rewound a MATCHED room back to TALLY).
+ * Every transition is a conditional UPDATE whose WHERE carries the
+ * precondition from the state machine's table — the same Postgres-
+ * native CAS as /start. The first settler's claim matches the row;
+ * every other settler's matches zero rows and stands down. No lock,
+ * no leader, no coordination: the row itself is the arbiter.
  */
 
 /** How long the server holds the REVEALING beat before the verdict. */
@@ -52,12 +54,13 @@ export async function settleIfAllDone(roomId: string, broadcast: Broadcast): Pro
 export async function settle(
   roomId: string, round: number, threshold: number, broadcast: Broadcast,
 ): Promise<void> {
-  // NAIVE: look, then act. The gap between these two statements is
-  // where the second settler walks in.
-  const { rows: look } = await pool.query<{ state: string }>(
-    "SELECT state FROM rooms WHERE id = $1", [roomId]);
-  if (look[0]?.state !== "ACTIVE") return;
-  await pool.query("UPDATE rooms SET state = 'TALLY' WHERE id = $1", [roomId]);
+  // The claim. ACTIVE -> TALLY happens exactly once per round because
+  // only one UPDATE can find the row still in ACTIVE.
+  const { rowCount: claimed } = await pool.query(
+    "UPDATE rooms SET state = 'TALLY' WHERE id = $1 AND state = 'ACTIVE'",
+    [roomId],
+  );
+  if (claimed !== 1) return; // another settler got here first — stand down
   await broadcast(roomId);
 
   // The tally itself is one aggregate over the durable, PK-deduped
@@ -76,19 +79,27 @@ export async function settle(
     ? null
     : winners[Math.floor(Math.random() * winners.length)]!.candidate_id;
 
-  await pool.query("UPDATE rooms SET state = 'REVEALING' WHERE id = $1", [roomId]);
+  // Every later step is conditional too: a transition whose
+  // precondition no longer holds (e.g. the host closed the room
+  // mid-tally -> NO_RESULT) matches zero rows instead of rewinding it.
+  const { rowCount: revealing } = await pool.query(
+    "UPDATE rooms SET state = 'REVEALING' WHERE id = $1 AND state = 'TALLY'",
+    [roomId],
+  );
+  if (revealing !== 1) return;
   await broadcast(roomId);
   await new Promise((r) => setTimeout(r, REVEAL_MS)); // the server-directed beat
 
   if (pick) {
     await pool.query(
       `UPDATE rooms SET state = 'MATCHED', result_candidate_id = $2, closed_at = now()
-        WHERE id = $1`,
+        WHERE id = $1 AND state = 'REVEALING'`,
       [roomId, pick],
     );
   } else {
     await pool.query(
-      "UPDATE rooms SET state = 'NO_RESULT', closed_at = now() WHERE id = $1",
+      `UPDATE rooms SET state = 'NO_RESULT', closed_at = now()
+        WHERE id = $1 AND state = 'REVEALING'`,
       [roomId],
     );
   }

@@ -1,14 +1,12 @@
 /**
- * Phase 4 exactly-once lab — DEMONSTRATION OF THE BREAK.
+ * Phase 4 exactly-once lab — the fixed half.
  *
  * Two processes. Both members have one card left; their final swipes
- * land on different processes at the same instant. Each handler sees
- * "all done" and settles. With naive look-then-act settlement, both
- * proceed: two REVEALs, two verdicts — and since every card had full
- * consensus, two DIFFERENT winners can be announced for one dinner.
- *
- * Prints what it observed over N trials; exits 0 when at least one
- * double-settlement was seen (the naive expectation).
+ * land on different processes at the same instant, so BOTH handlers
+ * see "all done" and call settle(). With CAS transitions, exactly one
+ * claims ACTIVE->TALLY; the other matches zero rows and stands down.
+ * Asserts one REVEALING, one verdict, zero chaos, in every trial.
+ * (The naive demo that double-settled 4/5 trials is in history.)
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
@@ -101,9 +99,9 @@ try {
 } finally { serverA.kill(); serverB.kill(); }
 doubles += errored;
 
-if (doubles > 0) {
-  console.log(`\nbreak observed in ${doubles}/${TRIALS} trials: look-then-act settlement ran twice for one round.`);
+if (doubles === 0) {
+  console.log(`\nexactly-once held in ${TRIALS}/${TRIALS} trials: two triggers, two processes, one settlement.`);
   process.exit(0);
 }
-console.error(`\nNOT BROKEN in ${TRIALS} trials (race window not hit — rerun, or the naive hub got lucky).`);
+console.error(`\nFAILED: settlement ran twice (or dissolved) in ${doubles}/${TRIALS} trials.`);
 process.exit(1);
