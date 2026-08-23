@@ -13,6 +13,11 @@ import Observation
 final class UserSession {
     private(set) var userId: String?
     private(set) var displayName: String?
+    /// The room this device is (or was last) in. Persisted so a killed
+    /// process can walk back into its game: identity is durable, and
+    /// the server kept everything else — this is the one breadcrumb the
+    /// client has to keep for itself.
+    private(set) var currentRoomId: String?
 
     private let api: HuddleAPIClient
     private let defaults = UserDefaults.standard
@@ -21,6 +26,17 @@ final class UserSession {
         self.api = api
         userId = defaults.string(forKey: "dev.userId")
         displayName = defaults.string(forKey: "dev.displayName")
+        currentRoomId = defaults.string(forKey: "session.currentRoomId")
+    }
+
+    func rememberRoom(_ roomId: String) {
+        currentRoomId = roomId
+        defaults.set(roomId, forKey: "session.currentRoomId")
+    }
+
+    func forgetRoom() {
+        currentRoomId = nil
+        defaults.removeObject(forKey: "session.currentRoomId")
     }
 
     var isRegistered: Bool { userId != nil }

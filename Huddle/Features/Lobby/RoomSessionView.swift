@@ -10,7 +10,15 @@ import SwiftUI
 /// covered view's task and kill the connection mid-game.
 struct RoomSessionView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(UserSession.self) private var session
     @State var viewModel: RoomSessionViewModel
+
+    /// Every way out of the room goes through here, so the breadcrumb
+    /// never outlives the session it points at.
+    private func leave() {
+        session.forgetRoom()
+        dismiss()
+    }
 
     var body: some View {
         Group {
@@ -32,9 +40,10 @@ struct RoomSessionView: View {
                    value: viewModel.room.state)
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { session.rememberRoom(viewModel.room.id) }
         .task { await viewModel.listenWhileVisible() }
         .onChange(of: viewModel.wasRemoved) { _, removed in
-            if removed { dismiss() }
+            if removed { leave() }
         }
     }
 
@@ -86,7 +95,7 @@ struct RoomSessionView: View {
                 Spacer()
             }
             Button {
-                dismiss()
+                leave()
             } label: {
                 Text("Done")
                     .font(.system(.headline, design: .rounded))
@@ -103,11 +112,18 @@ struct RoomSessionView: View {
     // MARK: ACTIVE — the shared deck
 
     private func playStage(deck: [Candidate]) -> some View {
-        VStack(spacing: 0) {
+        // Resume where the SERVER says we are: the deck order is frozen,
+        // so "cards already recorded for me" == "skip this many from the
+        // front". If a few outbox verdicts died with the old process,
+        // we simply re-ask those cards; the server's idempotency key
+        // keeps the first verdict and the re-swipe costs nothing.
+        let alreadyDone = viewModel.progressByUser[viewModel.myUserId] ?? 0
+        let remaining = Array(deck.dropFirst(alreadyDone))
+        return VStack(spacing: 0) {
             othersProgress
             SwipeDeckView(
-                provider: RoomDeckProvider(deck: deck),
-                deckSize: deck.count,
+                provider: RoomDeckProvider(deck: remaining),
+                deckSize: remaining.count,
                 allowsRestart: false,
                 onDecision: { candidate, decision in
                     viewModel.sendSwipe(candidate: candidate, decision: decision)
@@ -252,7 +268,7 @@ struct RoomSessionView: View {
             Button("Close room") {
                 Task {
                     await viewModel.close()
-                    dismiss()
+                    leave()
                 }
             }
             .font(.system(.subheadline, design: .rounded, weight: .semibold))
@@ -261,7 +277,7 @@ struct RoomSessionView: View {
             Text("Waiting for the host to start…")
                 .font(.system(.subheadline, design: .rounded))
                 .foregroundStyle(.secondary)
-            Button("Leave") { dismiss() }
+            Button("Leave") { leave() }
                 .font(.system(.subheadline, design: .rounded, weight: .semibold))
                 .foregroundStyle(.secondary)
         }

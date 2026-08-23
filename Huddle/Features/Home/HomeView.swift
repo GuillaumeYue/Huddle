@@ -9,6 +9,9 @@ import SwiftUI
 struct HomeView: View {
     /// Dev identity for the whole app; SIWA replaces its register path.
     @State private var session = UserSession(api: HuddleAPIClient())
+    private let api = HuddleAPIClient()
+    /// A room we were in when the process died, re-fetched and re-entered.
+    @State private var resumedRoom: RoomDTO?
 
     var body: some View {
         NavigationStack {
@@ -23,8 +26,34 @@ struct HomeView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
             .background(Color(.systemBackground))
+            .navigationDestination(item: $resumedRoom) { room in
+                RoomSessionView(viewModel: RoomSessionViewModel(
+                    room: room, api: api, myUserId: session.userId ?? ""))
+            }
+            .task { await resumeIfNeeded() }
         }
         .environment(session)
+    }
+
+    /// Walk back into an unfinished room after a process death. The
+    /// server is the source of truth: we only ask whether the room still
+    /// lists us and is still in play. Finished rooms are forgotten
+    /// quietly — the live session already shows verdicts to anyone who
+    /// merely backgrounded; a stale result page days later is noise.
+    private func resumeIfNeeded() async {
+        guard let roomId = session.currentRoomId, let me = session.userId else { return }
+        do {
+            let room = try await api.room(id: roomId)
+            let stillIn = room.participants.contains { $0.userId == me }
+            if stillIn && !room.state.isTerminal {
+                resumedRoom = room
+            } else {
+                session.forgetRoom()
+            }
+        } catch {
+            // Unreachable server or vanished room: keep the breadcrumb
+            // for the next launch rather than guessing.
+        }
     }
 
     // MARK: Decorative card fan
