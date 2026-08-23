@@ -31,6 +31,8 @@ struct WireContractTests {
         #expect(room.id == "b077a49e-4aac-40e9-953b-e9035c1658d1")
         #expect(room.joinCode == "JHYAJ7")
         #expect(room.state == .active)
+        #expect(room.round == 1)
+        #expect(room.result == nil)
         #expect(room.participants.count == 2)
         #expect(room.participants[0].displayName == "Alice")
         #expect(room.participants[0].isHost)
@@ -47,6 +49,16 @@ struct WireContractTests {
         #expect(candidates[0].title == "Sakura Sushi Bar")
         #expect(candidates[0].metadata["cuisine"] == "Japanese")
         #expect(candidates[1].metadata["priceLevel"] == "1")
+    }
+
+    @Test("MATCHED snapshot fixture decodes with its result")
+    func matchedEventDecodes() throws {
+        let event = try JSONDecoder().decode(
+            LiveEventDTO.self, from: fixtureData("room-matched-event.json"))
+        let room = try #require(event.room)
+        #expect(room.state == .matched)
+        #expect(room.result?.candidateId == "mock-009")
+        #expect(room.candidates?.contains { $0.id == "mock-009" } == true)
     }
 
     @Test("PROGRESS event fixture decodes")

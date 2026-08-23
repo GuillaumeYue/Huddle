@@ -20,6 +20,8 @@ export interface RoomRow {
   join_code: string;
   host_id: string;
   state: string;
+  round: number;
+  result_candidate_id: string | null;
   created_at: string;
 }
 
@@ -42,6 +44,10 @@ export interface RoomPayload {
   joinCode: string;
   hostId: string;
   state: RoomState;
+  /** Current round; overtime bumps it. Swipes and the roster key on it. */
+  round: number;
+  /** Settled outcome, present only in MATCHED. */
+  result?: { candidateId: string };
   participants: {
     userId: string;
     displayName: string;
@@ -98,6 +104,7 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
     joinCode: room.join_code,
     hostId: room.host_id,
     state: room.state,
+    round: room.round,
     participants: participants.map((p, i) => ({
       userId: p.user_id,
       displayName: p.display_name,
@@ -106,6 +113,9 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
       connected: Boolean(flags?.[i]?.[1]),
     })),
   };
+  if (room.result_candidate_id) {
+    payload.result = { candidateId: room.result_candidate_id };
+  }
   if (candidates.length > 0) {
     payload.candidates = candidates.map((c) => ({
       id: c.candidate_id,

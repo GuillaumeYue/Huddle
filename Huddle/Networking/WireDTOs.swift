@@ -17,9 +17,17 @@ struct RoomDTO: Decodable, Identifiable, Hashable {
     let joinCode: String
     let hostId: String
     let state: RoomState
+    /// Current round; overtime bumps it.
+    let round: Int
+    /// Settled outcome, present only in MATCHED.
+    let result: RoomResultDTO?
     let participants: [RoomParticipantDTO]
     /// The shared deck; present from ACTIVE onward, absent in LOBBY.
     let candidates: [CandidateDTO]?
+}
+
+struct RoomResultDTO: Decodable, Hashable {
+    let candidateId: String
 }
 
 struct CandidateDTO: Decodable, Identifiable, Hashable {

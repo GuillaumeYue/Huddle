@@ -14,7 +14,13 @@ struct RoomSessionView: View {
 
     var body: some View {
         Group {
-            if viewModel.isActive, let deck = viewModel.deck {
+            if viewModel.hasEnded {
+                resultStage
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            } else if viewModel.isTallying {
+                revealStage
+                    .transition(.opacity)
+            } else if viewModel.isActive, let deck = viewModel.deck {
                 playStage(deck: deck)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
             } else {
@@ -23,18 +29,75 @@ struct RoomSessionView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.85),
-                   value: viewModel.isActive)
+                   value: viewModel.room.state)
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.listenWhileVisible() }
         .onChange(of: viewModel.wasRemoved) { _, removed in
             if removed { dismiss() }
         }
-        .onChange(of: viewModel.hasEnded) { _, ended in
-            // Host closed the room; guests leave quietly (the host
-            // dismisses via their own button path).
-            if ended { dismiss() }
+    }
+
+    // MARK: TALLY / REVEALING — the server's stage, input closed
+
+    private var revealStage: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            Image(systemName: "sparkles")
+                .font(.system(size: 56, weight: .semibold))
+                .foregroundStyle(Color(.systemPink))
+                .symbolEffect(.pulse, options: .repeating)
+            Text(viewModel.room.state == .tally ? "Counting votes…" : "And the winner is…")
+                .font(.system(.title2, design: .rounded, weight: .heavy))
+                .contentTransition(.opacity)
+            Text("Sit tight — the table decides together.")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+            Spacer()
         }
+        .padding(24)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    // MARK: MATCHED / NO_RESULT — the outcome
+
+    private var resultStage: some View {
+        VStack(spacing: 20) {
+            Spacer(minLength: 12)
+            if let winner = viewModel.winner {
+                Text("It's a match!")
+                    .font(.system(.largeTitle, design: .rounded, weight: .heavy))
+                CardView(candidate: winner)
+                    .aspectRatio(3 / 4.2, contentMode: .fit)
+                    .padding(.horizontal, 8)
+            } else {
+                Spacer()
+                Image(systemName: viewModel.room.state == .matched ? "questionmark" : "moon.zzz.fill")
+                    .font(.system(size: 48, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(viewModel.room.candidates == nil ? "Room closed" : "No match this time")
+                    .font(.system(.title, design: .rounded, weight: .heavy))
+                Text(viewModel.room.candidates == nil
+                     ? "The host ended the room before it started."
+                     : "Nothing got everyone's yes. Next time, fresh picks.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Spacer()
+            }
+            Button {
+                dismiss()
+            } label: {
+                Text("Done")
+                    .font(.system(.headline, design: .rounded))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Color.primary, in: Capsule())
+                    .foregroundStyle(Color(.systemBackground))
+            }
+        }
+        .padding(24)
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: ACTIVE — the shared deck

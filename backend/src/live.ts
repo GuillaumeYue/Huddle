@@ -7,6 +7,7 @@ import {
 } from "./liveEvents.js";
 import { redisPub, redisSub } from "./redis.js";
 import { getRoomPayload, presenceKey } from "./roomsData.js";
+import { settleIfAllDone } from "./settlement.js";
 
 /**
  * The live (server-push) half of the protocol — multi-process edition.
@@ -357,6 +358,11 @@ class RoomHub {
     }
     if (inserted) {
       await this.broadcastProgress(roomId, conn.userId);
+      // Trigger A of ACTIVE→TALLY: everyone in the frozen roster has
+      // finished the deck. (Trigger B, the inactivity timeout, comes
+      // with the distributed-timer lab.) Two final swipes can land on
+      // two processes at once — settlement must survive that.
+      await settleIfAllDone(roomId, (id) => this.broadcastRoom(id));
     }
   }
 }

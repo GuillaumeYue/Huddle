@@ -164,6 +164,14 @@ roomsRouter.post("/rooms/:id/start", async (req, res) => {
           [room.id, candidate.id, position, candidate.title, candidate.metadata],
         );
       }
+      // Freeze the roster — "present" is decided here, by fact: whoever
+      // is in the room as the round starts IS the denominator, for the
+      // whole round, regardless of what their WiFi does later.
+      await client.query(
+        `INSERT INTO round_roster (room_id, round, user_id)
+         SELECT room_id, $2, user_id FROM room_participants WHERE room_id = $1`,
+        [room.id, room.round],
+      );
       await client.query("COMMIT");
     } else {
       await client.query("ROLLBACK");

@@ -66,8 +66,18 @@ final class RoomSessionViewModel {
     /// The round is on — show the deck. Strictly ACTIVE: a terminal state
     /// also leaves LOBBY, but means "go home", not "start playing".
     var isActive: Bool { room.state == .active }
-    /// The room ended (host closed it) — leave quietly.
+    /// The server is counting / directing the reveal: input is closed,
+    /// the screen is the server's stage.
+    var isTallying: Bool { room.state == .tally || room.state == .revealing }
+    /// The room reached a terminal state: show the outcome (a match, no
+    /// match, or "host closed the room"), then let the user leave.
     var hasEnded: Bool { room.state.isTerminal }
+
+    /// The settled winner, resolved against the shared deck.
+    var winner: Candidate? {
+        guard let id = room.result?.candidateId else { return nil }
+        return deck?.first { $0.id == id }
+    }
 
     /// The shared deck as engine Candidates. Non-nil from ACTIVE onward.
     var deck: [Candidate]? {

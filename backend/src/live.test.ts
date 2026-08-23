@@ -26,6 +26,7 @@ test("makeRoomStateEvent produces exactly the shared fixture", () => {
     joinCode: "JHYAJ7",
     hostId: "0ec08f3e-c110-4dce-80b8-99c4cdb97b10",
     state: "ACTIVE",
+    round: 1,
     participants: [
       {
         userId: "0ec08f3e-c110-4dce-80b8-99c4cdb97b10",
@@ -75,5 +76,21 @@ test("makeProgressEvent produces exactly the shared fixture", () => {
       deckSize: 10,
     }))),
     fixture("progress-event.json"),
+  );
+});
+
+test("MATCHED snapshot with result produces exactly the shared fixture", () => {
+  const base = fixture("room-state-event.json") as { room: RoomPayload };
+  const room: RoomPayload = {
+    ...base.room,
+    state: "MATCHED",
+    result: { candidateId: "mock-009" },
+    participants: base.room.participants.map((p) => ({
+      ...p, completedCount: 10, connected: true,
+    })),
+  };
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(makeRoomStateEvent(31, room))),
+    fixture("room-matched-event.json"),
   );
 });
