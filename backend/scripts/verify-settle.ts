@@ -20,8 +20,13 @@ interface U { id: string }
 interface Room {
   id: string; joinCode: string; state?: string; round?: number;
   result?: { candidateId: string };
+  threshold?: number; tally?: { candidateId: string; yes: number }[]; tie?: string[];
   participants: { userId: string }[];
   candidates?: { id: string }[];
+}
+async function postStatus(path: string, body: unknown): Promise<number> {
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return res.status;
 }
 interface Ev { type: string; seq: number; room?: Room; progress?: { userId: string; completed: number } }
 
@@ -61,8 +66,11 @@ const swipe = (c: ReturnType<typeof connect>, id: string, d: "YES" | "NO") =>
   c.ws.send(JSON.stringify({ type: "SWIPE", candidateId: id, decision: d }));
 
 /** Play a room to its verdict. `aliceYesPerRound[i]` = how many cards
- *  Alice says yes to in round i+1 (Bob always says yes to everything). */
-async function playRoom(aliceYesPerRound: number[]) {
+ *  Alice says yes to in round i+1 (Bob always says yes to everything).
+ *  `pick`: what to do if the reveal is a tie — "alice" taps the second
+ *  tied card, "race" has both tap different cards at once, "none"
+ *  leaves it to the server (only sane with a short PICK_TIMEOUT). */
+async function playRoom(aliceYesPerRound: number[], pick: "alice" | "race" | "none" = "none") {
   const a = await post<U>("/dev/users", { displayName: "Alice" });
   const b = await post<U>("/dev/users", { displayName: "Bob" });
   const room = await post<Room>("/rooms", { hostId: a.id });
@@ -83,31 +91,62 @@ async function playRoom(aliceYesPerRound: number[]) {
     await alice.until((e) => inState("TALLY")(e) && e.room?.round === round);
     console.log(`    … round ${round}: TALLY seen`);
   }
-  await alice.until(inState("REVEALING"));
-  console.log("    … REVEALING seen (server-directed beat)");
-  const final = await alice.until((e) => e.type === "ROOM_STATE" && (e.room?.state === "MATCHED" || e.room?.state === "NO_RESULT"));
+  const revealing = await alice.until(inState("REVEALING"));
+  const tie = revealing.room?.tie ?? [];
+  console.log(`    … REVEALING seen${tie.length ? ` (tie of ${tie.length}, waiting for the table)` : " (server-directed beat)"}`);
+
+  let picked: string | undefined; let statuses: number[] = [];
+  if (tie.length > 1 && pick === "alice") {
+    picked = tie[1]!;
+    statuses = [await postStatus(`/rooms/${room.id}/pick`, { userId: a.id, candidateId: picked })];
+    statuses.push(await postStatus(`/rooms/${room.id}/pick`, { userId: b.id, candidateId: tie[0] }));
+  } else if (tie.length > 1 && pick === "race") {
+    const [sa, sb] = await Promise.all([
+      postStatus(`/rooms/${room.id}/pick`, { userId: a.id, candidateId: tie[0] }),
+      postStatus(`/rooms/${room.id}/pick`, { userId: b.id, candidateId: tie[1] }),
+    ]);
+    statuses = [sa, sb];
+    picked = sa === 200 ? tie[0] : tie[1];
+  }
+  const final = await alice.until((e) => e.type === "ROOM_STATE" && (e.room?.state === "MATCHED" || e.room?.state === "NO_RESULT"), 25_000);
   check("terminal broadcast is followed by a clean 1000 hangup", (await alice.waitClosed()) === 1000);
-  return { decks, result: final.room?.result?.candidateId, finalState: final.room?.state, finalRound: final.room?.round };
+  return { decks, tie, picked, statuses, final: final.room! };
 }
 
-const r1 = await playRoom([3]);
-check("full consensus on 3 cards → MATCHED", r1.finalState === "MATCHED");
-check("winner is one of the 3 candidates everyone said yes to",
-  r1.result !== undefined && r1.decks[0]!.slice(0, 3).includes(r1.result));
+// 1. A single winner: server-directed beat, automatic verdict.
+const r1 = await playRoom([1]);
+check("single consensus → MATCHED without a pick", r1.final.state === "MATCHED" && r1.tie.length === 0
+  && r1.final.result?.candidateId === r1.decks[0]![0]);
+check("verdict carries the tally and threshold",
+  r1.final.threshold === 2 && (r1.final.tally?.length ?? 0) >= 1 && r1.final.tally?.[0]?.yes === 2);
 
-// Overtime: zero consensus from an engaged table → TALLY → ACTIVE round 2
-// with a deck that shares no card with round 1; consensus there → MATCHED.
-const r2 = await playRoom([0, 2]);
-check("zero consensus → overtime round 2 (TALLY → ACTIVE)", r2.finalRound === 2);
+// 2. A tie: the table picks blind; the second tap gets 409.
+const r2 = await playRoom([3], "alice");
+check("three-way consensus → REVEALING carries a tie of 3", r2.tie.length === 3);
+check("Alice's blind pick resolves the tie: 200, then Bob's tap gets 409",
+  r2.statuses[0] === 200 && r2.statuses[1] === 409);
+check("the verdict is exactly the card Alice tapped",
+  r2.final.state === "MATCHED" && r2.final.result?.candidateId === r2.picked);
+
+// 3. Two taps in the same instant: the row arbitrates — one 200, one 409.
+const r3 = await playRoom([2], "race");
+check("simultaneous picks: exactly one wins",
+  r3.statuses.filter((s) => s === 200).length === 1 && r3.statuses.includes(409));
+check("the verdict matches the winning tap", r3.final.result?.candidateId === r3.picked);
+
+// 4. Overtime: zero consensus → round 2 with a disjoint deck → tie → pick.
+const r4 = await playRoom([0, 2], "alice");
+check("zero consensus → overtime round 2 (TALLY → ACTIVE)", r4.final.round === 2);
 check("overtime deals a fresh deck — no card from round 1",
-  r2.decks[1]!.length === 10 && r2.decks[1]!.every((id) => !r2.decks[0]!.includes(id)));
-check("consensus in round 2 → MATCHED with a round-2 card",
-  r2.finalState === "MATCHED" && r2.result !== undefined && r2.decks[1]!.slice(0, 2).includes(r2.result));
+  r4.decks[1]!.length === 10 && r4.decks[1]!.every((id) => !r4.decks[0]!.includes(id)));
+check("round-2 tie resolved by the table with a round-2 card",
+  r4.final.state === "MATCHED" && r4.final.result?.candidateId === r4.picked && r4.decks[1]!.includes(r4.picked!));
 
-// The cap: zero consensus twice → NO_RESULT, no third round.
-const r3 = await playRoom([0, 0]);
+// 5. The cap: zero consensus twice → NO_RESULT, tally still reported.
+const r5 = await playRoom([0, 0]);
 check("zero consensus twice → NO_RESULT at the round cap",
-  r3.finalState === "NO_RESULT" && r3.finalRound === 2 && r3.result === undefined);
+  r5.final.state === "NO_RESULT" && r5.final.round === 2 && r5.final.result === undefined);
+check("NO_RESULT still explains itself with a tally", (r5.final.tally?.length ?? 0) > 0 && r5.final.threshold === 2);
 
-console.log("\nsettlement verified: TALLY → REVEALING → verdict, overtime and cap included");
+console.log("\nsettlement verified: beat, blind pick, pick race, overtime, cap");
 process.exit(0);

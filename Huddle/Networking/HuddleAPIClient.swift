@@ -55,6 +55,13 @@ struct HuddleAPIClient: Sendable {
         try await post("/rooms/\(id)/close", CloseRoomBody(userId: userId))
     }
 
+    /// The blind pick. 409 means someone at the table tapped first —
+    /// the socket delivers their verdict; the caller just stops.
+    func pick(roomId: String, userId: String, candidateId: String) async throws -> RoomDTO {
+        try await post("/rooms/\(roomId)/pick",
+                       PickBody(userId: userId, candidateId: candidateId))
+    }
+
     func kick(roomId: String, hostId: String, targetUserId: String) async throws -> RoomDTO {
         try await post("/rooms/\(roomId)/kick",
                        KickBody(hostId: hostId, targetUserId: targetUserId))

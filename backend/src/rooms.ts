@@ -5,7 +5,7 @@ import { dealDeck } from "./deck.js";
 import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
-import { markActivity } from "./settlement.js";
+import { markActivity, resolveReveal } from "./settlement.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -284,6 +284,45 @@ roomsRouter.post("/rooms/:id/close", async (req, res) => {
   else if (existing.host_id !== userId)
     res.status(403).json({ error: "only the host can close the room" });
   else res.json(await roomPayload(existing)); // already closed — idempotent
+});
+
+/**
+ * The blind pick. When several candidates all reached consensus the
+ * room sits in REVEALING with a `tie`; any roster member may tap one.
+ * First tap wins — the row decides, later taps get 409. "User-chosen
+ * randomness": the table picks, the server only enforces one verdict.
+ */
+roomsRouter.post("/rooms/:id/pick", async (req, res) => {
+  const roomId = req.params.id;
+  const userId: unknown = req.body?.userId;
+  const candidateId: unknown = req.body?.candidateId;
+  if (typeof userId !== "string" || !isUuid(userId) || !isUuid(roomId) ||
+      typeof candidateId !== "string") {
+    res.status(400).json({ error: "valid roomId, userId and candidateId are required" });
+    return;
+  }
+  const { rows: member } = await pool.query(
+    `SELECT 1 FROM round_roster rr JOIN rooms r ON r.id = rr.room_id
+      WHERE rr.room_id = $1 AND rr.user_id = $2 AND rr.round = r.round`,
+    [roomId, userId],
+  );
+  if (member.length === 0) {
+    res.status(403).json({ error: "only members of this round may pick" });
+    return;
+  }
+  const outcome = await resolveReveal(roomId, candidateId, (id) => hub.broadcastRoom(id));
+  const { rows } = await pool.query<RoomRow>("SELECT * FROM rooms WHERE id = $1", [roomId]);
+  const room = rows[0];
+  if (!room) { res.status(404).json({ error: "room not found" }); return; }
+  if (outcome === "invalid") {
+    res.status(400).json({ error: "that candidate is not part of the tie" });
+    return;
+  }
+  if (outcome === "already") {
+    res.status(409).json({ error: "the table already picked" });
+    return;
+  }
+  res.json(await roomPayload(room));
 });
 
 /** Poll a room (phase 2 stand-in for the phase-3 realtime push). */

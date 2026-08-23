@@ -49,7 +49,59 @@ struct RoomSessionView: View {
 
     // MARK: TALLY / REVEALING — the server's stage, input closed
 
+    @ViewBuilder
     private var revealStage: some View {
+        let tied = viewModel.tiedCandidates
+        if !tied.isEmpty {
+            blindPickStage(tied)
+        } else {
+            revealBeat
+        }
+    }
+
+    /// The tie: every card here got everyone's yes. Face-down, tap one —
+    /// first tap at the table wins (the server's row decides).
+    private func blindPickStage(_ tied: [Candidate]) -> some View {
+        VStack(spacing: 18) {
+            Spacer(minLength: 8)
+            Text("Everyone said yes to \(tied.count)")
+                .font(.system(.title2, design: .rounded, weight: .heavy))
+            Text("Tap a card to pick blind — first tap at the table wins.")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], spacing: 12) {
+                ForEach(tied) { candidate in
+                    Button {
+                        Task { await viewModel.pick(candidate) }
+                    } label: {
+                        faceDownCard
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isPicking)
+                }
+            }
+            .padding(.horizontal, 8)
+            Spacer()
+        }
+        .padding(24)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var faceDownCard: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(LinearGradient(colors: [Color(.systemPink), Color(.systemIndigo)],
+                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+            .aspectRatio(3 / 4.2, contentMode: .fit)
+            .overlay {
+                Text("?")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 6)
+    }
+
+    private var revealBeat: some View {
         VStack(spacing: 18) {
             Spacer()
             Image(systemName: "sparkles")
@@ -79,6 +131,7 @@ struct RoomSessionView: View {
                 CardView(candidate: winner)
                     .aspectRatio(3 / 4.2, contentMode: .fit)
                     .padding(.horizontal, 8)
+                tallySummary
             } else {
                 Spacer()
                 Image(systemName: viewModel.room.state == .matched ? "questionmark" : "moon.zzz.fill")
@@ -92,6 +145,7 @@ struct RoomSessionView: View {
                     .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                tallySummary
                 Spacer()
             }
             Button {
@@ -107,6 +161,39 @@ struct RoomSessionView: View {
         }
         .padding(24)
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    /// How the table voted: top candidates, yes out of threshold.
+    @ViewBuilder
+    private var tallySummary: some View {
+        let rows = Array(viewModel.tallyRows.prefix(4))
+        if let threshold = viewModel.room.threshold, !rows.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(rows, id: \.candidate.id) { row in
+                    HStack(spacing: 10) {
+                        Text(row.candidate.title)
+                            .font(.system(.footnote, design: .rounded, weight: .semibold))
+                            .lineLimit(1)
+                        Spacer()
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.quaternary)
+                                Capsule()
+                                    .fill(row.yes >= threshold ? Color(.systemPink) : Color.primary.opacity(0.5))
+                                    .frame(width: geo.size.width * CGFloat(row.yes) / CGFloat(max(threshold, 1)))
+                            }
+                        }
+                        .frame(width: 90, height: 6)
+                        Text("\(row.yes)/\(threshold)")
+                            .font(.system(.caption, design: .rounded, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 34, alignment: .trailing)
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+        }
     }
 
     // MARK: ACTIVE — the shared deck

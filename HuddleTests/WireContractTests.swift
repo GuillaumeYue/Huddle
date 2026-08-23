@@ -59,6 +59,11 @@ struct WireContractTests {
         #expect(room.state == .matched)
         #expect(room.result?.candidateId == "mock-009")
         #expect(room.candidates?.contains { $0.id == "mock-009" } == true)
+        #expect(room.threshold == 2)
+        #expect(room.tally?.count == 2)
+        #expect(room.tally?.first?.candidateId == "mock-009")
+        #expect(room.tally?.first?.yes == 2)
+        #expect(room.tie == nil)
     }
 
     @Test("PROGRESS event fixture decodes")

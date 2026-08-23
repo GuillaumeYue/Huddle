@@ -79,6 +79,37 @@ final class RoomSessionViewModel {
         return deck?.first { $0.id == id }
     }
 
+    /// Candidates awaiting the table's blind pick (REVEALING with a tie).
+    var tiedCandidates: [Candidate] {
+        guard let tie = room.tie, let deck else { return [] }
+        return tie.compactMap { id in deck.first { $0.id == id } }
+    }
+
+    /// Vote summary for the reveal, most yes first.
+    var tallyRows: [(candidate: Candidate, yes: Int)] {
+        guard let tally = room.tally, let deck else { return [] }
+        return tally.compactMap { entry in
+            deck.first { $0.id == entry.candidateId }.map { ($0, entry.yes) }
+        }
+    }
+
+    private(set) var isPicking = false
+
+    /// The blind pick: first tap at the table wins; a 409 just means
+    /// someone else's tap got there first and their verdict is already
+    /// on its way over the socket.
+    func pick(_ candidate: Candidate) async {
+        guard !isPicking else { return }
+        isPicking = true
+        defer { isPicking = false }
+        do {
+            apply(try await api.pick(roomId: room.id, userId: myUserId, candidateId: candidate.id))
+        } catch {
+            // Lost the race or the tie already resolved — the snapshot
+            // that explains it arrives over the socket.
+        }
+    }
+
     /// The shared deck as engine Candidates. Non-nil from ACTIVE onward.
     var deck: [Candidate]? {
         room.candidates.map { list in

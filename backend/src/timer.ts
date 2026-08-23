@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { pool } from "./db.js";
 import { redisPub } from "./redis.js";
-import { isInactive, settleByTimeout } from "./settlement.js";
+import { isInactive, PICK_TIMEOUT_MS, resolveReveal, settleByTimeout } from "./settlement.js";
 
 /**
  * The distributed inactivity timer.
@@ -42,8 +42,25 @@ const RENEW_IF_MINE = `
   return 0
 `;
 
+const RELEASE_IF_MINE = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+`;
+
 let leader = false;
 export const isTimerLeader = (): boolean => leader;
+
+/** Graceful handoff: a process that is shutting down on purpose gives
+ *  the lease back instead of letting it linger for a TTL — a rolling
+ *  deploy gets a new sweeper within one tick, not one lease TTL. Only
+ *  dirty deaths (SIGKILL, panic) fall back to expiry. */
+export async function releaseTimerLease(): Promise<void> {
+  if (!leader) return;
+  leader = false;
+  await redisPub.eval(RELEASE_IF_MINE, 1, LEASE_KEY, instanceId).catch(() => undefined);
+}
 
 type Broadcast = (roomId: string) => Promise<void>;
 
@@ -65,13 +82,18 @@ async function tick(broadcast: Broadcast): Promise<void> {
   leader = await holdLease();
   if (!leader) return;
 
-  // Every ACTIVE room in the system — hosted or orphaned alike.
-  const { rows } = await pool.query<{ id: string }>(
-    "SELECT id FROM rooms WHERE state = 'ACTIVE' AND closed_at IS NULL",
+  // Every live room in the system — hosted or orphaned alike. ACTIVE
+  // rooms nobody acts in get settled; REVEALING rooms whose settler
+  // died (or whose table never picked) get their verdict. Every state
+  // has an exit, and this loop is the one that guarantees it.
+  const { rows } = await pool.query<{ id: string; state: string }>(
+    "SELECT id, state FROM rooms WHERE state IN ('ACTIVE', 'REVEALING') AND closed_at IS NULL",
   );
-  for (const { id } of rows) {
-    if (await isInactive(id)) {
-      await settleByTimeout(id, broadcast);
+  for (const { id, state } of rows) {
+    if (state === "ACTIVE") {
+      if (await isInactive(id)) await settleByTimeout(id, broadcast);
+    } else if (await isInactive(id, PICK_TIMEOUT_MS + 5_000)) {
+      await resolveReveal(id, null, broadcast);
     }
   }
 }

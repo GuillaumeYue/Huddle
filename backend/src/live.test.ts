@@ -85,6 +85,8 @@ test("MATCHED snapshot with result produces exactly the shared fixture", () => {
     ...base.room,
     state: "MATCHED",
     result: { candidateId: "mock-009" },
+    threshold: 2,
+    tally: [{ candidateId: "mock-009", yes: 2 }, { candidateId: "mock-002", yes: 1 }],
     participants: base.room.participants.map((p) => ({
       ...p, completedCount: 10, connected: true,
     })),

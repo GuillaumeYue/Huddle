@@ -48,6 +48,15 @@ export interface RoomPayload {
   round: number;
   /** Settled outcome, present only in MATCHED. */
   result?: { candidateId: string };
+  /** Consensus threshold (v1: the frozen roster size). From TALLY on. */
+  threshold?: number;
+  /** Yes-counts per candidate for the current round, most first. From
+   *  TALLY on — never during ACTIVE, so nobody's ballot leaks before
+   *  the reveal. */
+  tally?: { candidateId: string; yes: number }[];
+  /** Candidates that ALL reached consensus: the blind pick is pending.
+   *  Present only in REVEALING while no result exists. */
+  tie?: string[];
   participants: {
     userId: string;
     displayName: string;
@@ -116,6 +125,25 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
   };
   if (room.result_candidate_id) {
     payload.result = { candidateId: room.result_candidate_id };
+  }
+  if (room.state !== "LOBBY" && room.state !== "ACTIVE") {
+    const [{ rows: tally }, { rows: roster }] = await Promise.all([
+      pool.query<{ candidate_id: string; yes: string }>(
+        `SELECT candidate_id, count(*) AS yes FROM swipes
+          WHERE room_id = $1 AND round = $2 AND decision = 'YES'
+          GROUP BY candidate_id ORDER BY yes DESC, candidate_id`,
+        [room.id, room.round]),
+      pool.query<{ n: string }>(
+        "SELECT count(*) AS n FROM round_roster WHERE room_id = $1 AND round = $2",
+        [room.id, room.round]),
+    ]);
+    const threshold = Number(roster[0]?.n ?? 0);
+    payload.threshold = threshold;
+    payload.tally = tally.map((t) => ({ candidateId: t.candidate_id, yes: Number(t.yes) }));
+    if (room.state === "REVEALING" && !room.result_candidate_id) {
+      const winners = payload.tally.filter((t) => t.yes >= threshold).map((t) => t.candidateId);
+      if (winners.length > 1) payload.tie = winners;
+    }
   }
   if (candidates.length > 0) {
     payload.candidates = candidates.map((c) => ({

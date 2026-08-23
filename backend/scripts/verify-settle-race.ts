@@ -10,12 +10,18 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
+import { Redis } from "ioredis";
+
+// Each probe owns redis db 1 for the clusters it spawns; start clean so
+// nothing a previous probe left behind (a lease, a presence key) can
+// shape this run.
+await new Redis("redis://localhost:6379/1").flushdb().then((_r) => undefined);
 
 const A_PORT = 3100, B_PORT = 3101, TRIALS = 5;
 
 async function startServer(port: number): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PORT: String(port), REVEAL_MS: "300" }, stdio: "ignore",
+    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PICK_TIMEOUT_MS: "300", PORT: String(port), REVEAL_MS: "300" }, stdio: "ignore",
   });
   for (let i = 0; i < 60; i++) {
     try { if ((await fetch(`http://localhost:${port}/health`)).ok) return child; } catch {}

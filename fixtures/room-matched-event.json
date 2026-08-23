@@ -10,6 +10,17 @@
     "result": {
       "candidateId": "mock-009"
     },
+    "threshold": 2,
+    "tally": [
+      {
+        "candidateId": "mock-009",
+        "yes": 2
+      },
+      {
+        "candidateId": "mock-002",
+        "yes": 1
+      }
+    ],
     "participants": [
       {
         "userId": "0ec08f3e-c110-4dce-80b8-99c4cdb97b10",

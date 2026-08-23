@@ -21,6 +21,13 @@ struct RoomDTO: Decodable, Identifiable, Hashable {
     let round: Int
     /// Settled outcome, present only in MATCHED.
     let result: RoomResultDTO?
+    /// Consensus threshold (v1: roster size). From TALLY on.
+    let threshold: Int?
+    /// Yes-counts per candidate, most first. From TALLY on — never
+    /// during ACTIVE, so the reveal keeps its suspense.
+    let tally: [TallyEntryDTO]?
+    /// Candidates that all reached consensus: a blind pick is pending.
+    let tie: [String]?
     let participants: [RoomParticipantDTO]
     /// The shared deck; present from ACTIVE onward, absent in LOBBY.
     let candidates: [CandidateDTO]?
@@ -28,6 +35,11 @@ struct RoomDTO: Decodable, Identifiable, Hashable {
 
 struct RoomResultDTO: Decodable, Hashable {
     let candidateId: String
+}
+
+struct TallyEntryDTO: Decodable, Hashable {
+    let candidateId: String
+    let yes: Int
 }
 
 struct CandidateDTO: Decodable, Identifiable, Hashable {
@@ -100,3 +112,4 @@ struct JoinRoomBody: Encodable { let code: String, userId: String }
 struct StartRoomBody: Encodable { let userId: String }
 struct CloseRoomBody: Encodable { let userId: String }
 struct KickBody: Encodable { let hostId: String, targetUserId: String }
+struct PickBody: Encodable { let userId: String, candidateId: String }

@@ -31,6 +31,10 @@ const MAX_ROUNDS = Number(process.env["MAX_ROUNDS"] ?? 2);
  *  a table that wandered off — must not leave a room ACTIVE forever. */
 const INACTIVITY_MS = Number(process.env["INACTIVITY_MS"] ?? 90_000);
 
+/** How long a tied REVEALING waits for a member's blind pick before the
+ *  server picks for the table — every state has an exit. */
+export const PICK_TIMEOUT_MS = Number(process.env["PICK_TIMEOUT_MS"] ?? 20_000);
+
 const activityKey = (roomId: string): string => `room:${roomId}:activity`;
 
 /** Called on every swipe (and at start): the timer only counts down
@@ -39,10 +43,12 @@ export async function markActivity(roomId: string): Promise<void> {
   await redisPub.set(activityKey(roomId), String(Date.now()), "EX", 24 * 60 * 60);
 }
 
-export async function isInactive(roomId: string): Promise<boolean> {
+export async function isInactive(
+  roomId: string, thresholdMs: number = INACTIVITY_MS,
+): Promise<boolean> {
   const last = await redisPub.get(activityKey(roomId));
   if (!last) return false; // unknown → don't guess, wait for an activity mark
-  return Date.now() - Number(last) > INACTIVITY_MS;
+  return Date.now() - Number(last) > thresholdMs;
 }
 
 /** Trigger B entry: settle with partial votes. settle() is CAS-guarded,
@@ -111,22 +117,11 @@ export async function settle(
   // The tally itself is one aggregate over the durable, PK-deduped
   // swipes — Postgres counts atomically; the hard part was never the
   // counting, it is making sure only ONE settler acts on the count.
-  const { rows: winners } = await pool.query<{ candidate_id: string }>(
-    `SELECT candidate_id FROM swipes
-      WHERE room_id = $1 AND round = $2 AND decision = 'YES'
-      GROUP BY candidate_id
-     HAVING count(*) >= $3`,
-    [roomId, round, threshold],
-  );
-  // Multi-way full consensus = a tie among winners → blind pick.
-  // (v1: server-side random; the user-tapped blind pick is UI polish.)
-  const pick = winners.length === 0
-    ? null
-    : winners[Math.floor(Math.random() * winners.length)]!.candidate_id;
+  const winners = await winnersFor(roomId, round, threshold);
 
   // Zero consensus from an engaged table: overtime — TALLY → ACTIVE with
   // a fresh deck and a re-frozen roster, while rounds remain.
-  if (pick === null && options.allowOvertime && round < MAX_ROUNDS) {
+  if (winners.length === 0 && options.allowOvertime && round < MAX_ROUNDS) {
     if (await overtime(roomId, round, broadcast)) return;
     // provider exhausted or lost the CAS: fall through to the verdict
   }
@@ -139,23 +134,69 @@ export async function settle(
     [roomId],
   );
   if (revealing !== 1) return;
+  await markActivity(roomId); // REVEALING's own clock, for the sweeper's rescue
   await broadcast(roomId);
-  await new Promise((r) => setTimeout(r, REVEAL_MS)); // the server-directed beat
 
-  if (pick) {
-    await pool.query(
-      `UPDATE rooms SET state = 'MATCHED', result_candidate_id = $2, closed_at = now()
-        WHERE id = $1 AND state = 'REVEALING'`,
-      [roomId, pick],
-    );
-  } else {
-    await pool.query(
-      `UPDATE rooms SET state = 'NO_RESULT', closed_at = now()
-        WHERE id = $1 AND state = 'REVEALING'`,
-      [roomId],
-    );
-  }
+  // One winner: the server-directed beat, then the verdict. A tie: the
+  // table gets PICK_TIMEOUT_MS to tap a blind pick (first tap wins, via
+  // the same CAS); if nobody does, the server picks for them. Either
+  // way resolveReveal() is a no-op if someone already resolved it.
+  await new Promise((r) => setTimeout(r, winners.length > 1 ? PICK_TIMEOUT_MS : REVEAL_MS));
+  await resolveReveal(roomId, null, broadcast);
+}
+
+async function winnersFor(roomId: string, round: number, threshold: number): Promise<string[]> {
+  const { rows } = await pool.query<{ candidate_id: string }>(
+    `SELECT candidate_id FROM swipes
+      WHERE room_id = $1 AND round = $2 AND decision = 'YES'
+      GROUP BY candidate_id
+     HAVING count(*) >= $3
+      ORDER BY candidate_id`,
+    [roomId, round, threshold],
+  );
+  return rows.map((r) => r.candidate_id);
+}
+
+export type RevealOutcome = "resolved" | "already" | "invalid";
+
+/**
+ * REVEALING → MATCHED | NO_RESULT. Three callers, one arbiter:
+ *   - settle() after the beat / pick timeout (chosen = null → random)
+ *   - POST /rooms/:id/pick, a member's blind pick (chosen = their card)
+ *   - the timer sweeper rescuing a REVEALING whose settler died
+ * The CAS (state = REVEALING AND no result yet) makes them all safe to
+ * race: exactly one verdict, the rest learn "already".
+ */
+export async function resolveReveal(
+  roomId: string, chosen: string | null, broadcast: Broadcast,
+): Promise<RevealOutcome> {
+  const { rows } = await pool.query<{ state: string; round: number; roster: string }>(
+    `SELECT r.state, r.round,
+       (SELECT count(*) FROM round_roster rr
+         WHERE rr.room_id = r.id AND rr.round = r.round) AS roster
+     FROM rooms r WHERE r.id = $1`,
+    [roomId],
+  );
+  const p = rows[0];
+  if (!p || p.state !== "REVEALING") return "already";
+  const winners = await winnersFor(roomId, p.round, Number(p.roster));
+  if (chosen !== null && !winners.includes(chosen)) return "invalid";
+  const pick = chosen ?? (winners.length === 0
+    ? null
+    : winners[Math.floor(Math.random() * winners.length)]!);
+
+  const { rowCount } = pick
+    ? await pool.query(
+        `UPDATE rooms SET state = 'MATCHED', result_candidate_id = $2, closed_at = now()
+          WHERE id = $1 AND state = 'REVEALING' AND result_candidate_id IS NULL`,
+        [roomId, pick])
+    : await pool.query(
+        `UPDATE rooms SET state = 'NO_RESULT', closed_at = now()
+          WHERE id = $1 AND state = 'REVEALING'`,
+        [roomId]);
+  if (rowCount !== 1) return "already";
   await broadcast(roomId);
+  return "resolved";
 }
 
 /**

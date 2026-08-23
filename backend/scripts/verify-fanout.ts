@@ -11,6 +11,12 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
+import { Redis } from "ioredis";
+
+// Each probe owns redis db 1 for the clusters it spawns; start clean so
+// nothing a previous probe left behind (a lease, a presence key) can
+// shape this run.
+await new Redis("redis://localhost:6379/1").flushdb().then((_r) => undefined);
 
 const A_PORT = 3100;
 const B_PORT = 3101;

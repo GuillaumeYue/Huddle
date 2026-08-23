@@ -9,13 +9,19 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
+import { Redis } from "ioredis";
+
+// Each probe owns redis db 1 for the clusters it spawns; start clean so
+// nothing a previous probe left behind (a lease, a presence key) can
+// shape this run.
+await new Redis("redis://localhost:6379/1").flushdb().then((_r) => undefined);
 
 const A_PORT = 3100, B_PORT = 3101;
 const INACTIVITY_MS = 2000;
 
 async function startServer(port: number): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
-    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PORT: String(port), INACTIVITY_MS: String(INACTIVITY_MS),
+    env: { ...process.env, REDIS_URL: "redis://localhost:6379/1", PICK_TIMEOUT_MS: "500", PORT: String(port), INACTIVITY_MS: String(INACTIVITY_MS),
       HEARTBEAT_MS: "1000", TIMER_TICK_MS: "500", REVEAL_MS: "200", PRESENCE_TTL_SECONDS: "3" },
     stdio: process.env["DEBUG_SPAWN"] ? "inherit" : "ignore",
   });
