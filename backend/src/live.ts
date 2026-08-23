@@ -7,7 +7,7 @@ import {
 } from "./liveEvents.js";
 import { redisPub, redisSub } from "./redis.js";
 import { getRoomPayload, presenceKey } from "./roomsData.js";
-import { settleIfAllDone } from "./settlement.js";
+import { isInactive, markActivity, settleByTimeout, settleIfAllDone } from "./settlement.js";
 
 /**
  * The live (server-push) half of the protocol — multi-process edition.
@@ -190,6 +190,15 @@ class RoomHub {
       }
       await renewals.exec();
 
+      // NAIVE inactivity timer, on purpose: each process times out the
+      // rooms IT HOSTS (has local sockets for). Intuitive — and wrong in
+      // exactly the case the timeout exists for: a room whose members
+      // have all gone dark is hosted by nobody, so nobody times it out.
+      // The demo script shows the stuck room; the leased sweeper follows.
+      if (await isInactive(roomId)) {
+        await settleByTimeout(roomId, (id) => this.broadcastRoom(id));
+      }
+
       // Sweeper: presence changed without any event on this process
       // (typically: another process died and its leases expired)?
       const room = await getRoomPayload(roomId);
@@ -357,6 +366,7 @@ class RoomHub {
       return; // FK violation: candidate not in this room's deck
     }
     if (inserted) {
+      await markActivity(roomId); // the inactivity clock restarts on every act
       await this.broadcastProgress(roomId, conn.userId);
       // Trigger A of ACTIVE→TALLY: everyone in the frozen roster has
       // finished the deck. (Trigger B, the inactivity timeout, comes

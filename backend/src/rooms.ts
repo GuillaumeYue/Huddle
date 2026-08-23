@@ -5,6 +5,7 @@ import { pool } from "./db.js";
 import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
+import { markActivity } from "./settlement.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -184,6 +185,7 @@ roomsRouter.post("/rooms/:id/start", async (req, res) => {
   }
 
   if (room) {
+    await markActivity(room.id); // the inactivity clock starts with the round
     notify(room.id);
     res.json(await roomPayload(room));
     return;

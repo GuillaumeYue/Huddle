@@ -1,4 +1,5 @@
 import { pool } from "./db.js";
+import { redisPub } from "./redis.js";
 
 /**
  * ACTIVE → TALLY → REVEALING → MATCHED | NO_RESULT.
@@ -18,6 +19,40 @@ import { pool } from "./db.js";
 
 /** How long the server holds the REVEALING beat before the verdict. */
 const REVEAL_MS = Number(process.env["REVEAL_MS"] ?? 2500);
+
+/** Trigger B: a room nobody has acted in for this long is settled with
+ *  whatever votes exist. The rescue path — a member who never returns,
+ *  a table that wandered off — must not leave a room ACTIVE forever. */
+const INACTIVITY_MS = Number(process.env["INACTIVITY_MS"] ?? 90_000);
+
+const activityKey = (roomId: string): string => `room:${roomId}:activity`;
+
+/** Called on every swipe (and at start): the timer only counts down
+ *  while nobody is acting. */
+export async function markActivity(roomId: string): Promise<void> {
+  await redisPub.set(activityKey(roomId), String(Date.now()), "EX", 24 * 60 * 60);
+}
+
+export async function isInactive(roomId: string): Promise<boolean> {
+  const last = await redisPub.get(activityKey(roomId));
+  if (!last) return false; // unknown → don't guess, wait for an activity mark
+  return Date.now() - Number(last) > INACTIVITY_MS;
+}
+
+/** Trigger B entry: settle with partial votes. settle() is CAS-guarded,
+ *  so this may be called by any number of timers — at most one acts. */
+export async function settleByTimeout(roomId: string, broadcast: Broadcast): Promise<void> {
+  const { rows } = await pool.query<{ state: string; round: number; roster: string }>(
+    `SELECT r.state, r.round,
+       (SELECT count(*) FROM round_roster rr
+         WHERE rr.room_id = r.id AND rr.round = r.round) AS roster
+     FROM rooms r WHERE r.id = $1`,
+    [roomId],
+  );
+  const p = rows[0];
+  if (!p || p.state !== "ACTIVE") return;
+  await settle(roomId, p.round, Number(p.roster), broadcast);
+}
 
 type Broadcast = (roomId: string) => Promise<void>;
 
