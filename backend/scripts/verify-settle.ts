@@ -18,7 +18,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 interface U { id: string }
 interface Room {
-  id: string; joinCode: string; state?: string;
+  id: string; joinCode: string; state?: string; round?: number;
   result?: { candidateId: string };
   participants: { userId: string }[];
   candidates?: { id: string }[];
@@ -29,7 +29,11 @@ function connect(roomId: string, userId: string) {
   const ws = new WebSocket(`ws://localhost:3000/rooms/${roomId}/live?userId=${userId}`);
   const queue: Ev[] = []; const waiters: ((e: Ev) => void)[] = [];
   let closed: number | null = null;
-  ws.on("message", (d) => { const e = JSON.parse(String(d)) as Ev; const w = waiters.shift(); if (w) w(e); else queue.push(e); });
+  ws.on("message", (d) => {
+    const e = JSON.parse(String(d)) as Ev;
+    if (process.env["VERBOSE"]) console.log(`      [${userId.slice(0, 4)}] ${e.type} ${e.room?.state ?? ""} r${e.room?.round ?? ""} ${e.progress ? `completed=${e.progress.completed}` : ""}`);
+    const w = waiters.shift(); if (w) w(e); else queue.push(e);
+  });
   ws.on("close", (c) => { closed = c; });
   ws.on("error", () => {});
   const nextEvent = (ms: number): Promise<Ev> => {
@@ -56,7 +60,9 @@ const inState = (s: string) => (e: Ev) => e.type === "ROOM_STATE" && e.room?.sta
 const swipe = (c: ReturnType<typeof connect>, id: string, d: "YES" | "NO") =>
   c.ws.send(JSON.stringify({ type: "SWIPE", candidateId: id, decision: d }));
 
-async function playRound(aliceYes: number): Promise<{ alice: ReturnType<typeof connect>; deck: string[]; result?: string; finalState?: string }> {
+/** Play a room to its verdict. `aliceYesPerRound[i]` = how many cards
+ *  Alice says yes to in round i+1 (Bob always says yes to everything). */
+async function playRoom(aliceYesPerRound: number[]) {
   const a = await post<U>("/dev/users", { displayName: "Alice" });
   const b = await post<U>("/dev/users", { displayName: "Bob" });
   const room = await post<Room>("/rooms", { hostId: a.id });
@@ -64,27 +70,44 @@ async function playRound(aliceYes: number): Promise<{ alice: ReturnType<typeof c
   const alice = connect(room.id, a.id); const bob = connect(room.id, b.id);
   await alice.until((e) => e.type === "ROOM_STATE"); await bob.until((e) => e.type === "ROOM_STATE");
   await post(`/rooms/${room.id}/start`, { userId: a.id });
-  const active = await alice.until(inState("ACTIVE"));
-  await bob.until(inState("ACTIVE"));
-  const deck = (active.room?.candidates ?? []).map((c) => c.id);
-  deck.forEach((id, i) => { swipe(bob, id, "YES"); swipe(alice, id, i < aliceYes ? "YES" : "NO"); });
-  await alice.until(inState("TALLY"));
-  console.log("    … TALLY seen");
+
+  const decks: string[][] = [];
+  for (let round = 1; round <= aliceYesPerRound.length; round++) {
+    const activeIn = (e: Ev) => inState("ACTIVE")(e) && e.room?.round === round;
+    const active = await alice.until(activeIn);
+    await bob.until(activeIn);
+    const deck = (active.room?.candidates ?? []).map((c) => c.id);
+    decks.push(deck);
+    const yes = aliceYesPerRound[round - 1]!;
+    deck.forEach((id, i) => { swipe(bob, id, "YES"); swipe(alice, id, i < yes ? "YES" : "NO"); });
+    await alice.until((e) => inState("TALLY")(e) && e.room?.round === round);
+    console.log(`    … round ${round}: TALLY seen`);
+  }
   await alice.until(inState("REVEALING"));
   console.log("    … REVEALING seen (server-directed beat)");
   const final = await alice.until((e) => e.type === "ROOM_STATE" && (e.room?.state === "MATCHED" || e.room?.state === "NO_RESULT"));
-  const code = await alice.waitClosed();
-  check("terminal broadcast is followed by a clean 1000 hangup", code === 1000);
-  return { alice, deck, result: final.room?.result?.candidateId, finalState: final.room?.state };
+  check("terminal broadcast is followed by a clean 1000 hangup", (await alice.waitClosed()) === 1000);
+  return { decks, result: final.room?.result?.candidateId, finalState: final.room?.state, finalRound: final.room?.round };
 }
 
-const r1 = await playRound(3);
+const r1 = await playRoom([3]);
 check("full consensus on 3 cards → MATCHED", r1.finalState === "MATCHED");
 check("winner is one of the 3 candidates everyone said yes to",
-  r1.result !== undefined && r1.deck.slice(0, 3).includes(r1.result));
+  r1.result !== undefined && r1.decks[0]!.slice(0, 3).includes(r1.result));
 
-const r2 = await playRound(0);
-check("zero consensus → NO_RESULT", r2.finalState === "NO_RESULT" && r2.result === undefined);
+// Overtime: zero consensus from an engaged table → TALLY → ACTIVE round 2
+// with a deck that shares no card with round 1; consensus there → MATCHED.
+const r2 = await playRoom([0, 2]);
+check("zero consensus → overtime round 2 (TALLY → ACTIVE)", r2.finalRound === 2);
+check("overtime deals a fresh deck — no card from round 1",
+  r2.decks[1]!.length === 10 && r2.decks[1]!.every((id) => !r2.decks[0]!.includes(id)));
+check("consensus in round 2 → MATCHED with a round-2 card",
+  r2.finalState === "MATCHED" && r2.result !== undefined && r2.decks[1]!.slice(0, 2).includes(r2.result));
 
-console.log("\nsettlement verified: TALLY → REVEALING → verdict, server-directed");
+// The cap: zero consensus twice → NO_RESULT, no third round.
+const r3 = await playRoom([0, 0]);
+check("zero consensus twice → NO_RESULT at the round cap",
+  r3.finalState === "NO_RESULT" && r3.finalRound === 2 && r3.result === undefined);
+
+console.log("\nsettlement verified: TALLY → REVEALING → verdict, overtime and cap included");
 process.exit(0);

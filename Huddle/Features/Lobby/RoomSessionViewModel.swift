@@ -168,6 +168,10 @@ final class RoomSessionViewModel {
     }
 
     private func apply(_ snapshot: RoomDTO) {
+        // Overtime: a new round is a new race. Counts are per round on
+        // the wire, so the max-merge below must not carry last round's
+        // numbers forward.
+        if snapshot.round != room.round { progressByUser = [:] }
         room = snapshot
         // Progress resync: the snapshot carries authoritative counts, so
         // PROGRESS events missed while we were disconnected are healed

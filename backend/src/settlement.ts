@@ -1,3 +1,4 @@
+import { dealDeck } from "./deck.js";
 import { pool } from "./db.js";
 import { redisPub } from "./redis.js";
 
@@ -19,6 +20,11 @@ import { redisPub } from "./redis.js";
 
 /** How long the server holds the REVEALING beat before the verdict. */
 const REVEAL_MS = Number(process.env["REVEAL_MS"] ?? 2500);
+
+/** Overtime cap: zero consensus deals a fresh deck this many rounds
+ *  in total, then the room resolves NO_RESULT — every state has an
+ *  exit, and "try again forever" is not one. */
+const MAX_ROUNDS = Number(process.env["MAX_ROUNDS"] ?? 2);
 
 /** Trigger B: a room nobody has acted in for this long is settled with
  *  whatever votes exist. The rescue path — a member who never returns,
@@ -51,7 +57,9 @@ export async function settleByTimeout(roomId: string, broadcast: Broadcast): Pro
   );
   const p = rows[0];
   if (!p || p.state !== "ACTIVE") return;
-  await settle(roomId, p.round, Number(p.roster), broadcast);
+  // A room that timed out is not asked to play again: settle with what
+  // exists. Overtime is for engaged tables, not abandoned ones.
+  await settle(roomId, p.round, Number(p.roster), broadcast, { allowOvertime: false });
 }
 
 type Broadcast = (roomId: string) => Promise<void>;
@@ -75,7 +83,7 @@ export async function settleIfAllDone(roomId: string, broadcast: Broadcast): Pro
        (SELECT count(*) FROM swipes s
          WHERE s.room_id = r.id AND s.round = r.round)            AS total,
        (SELECT count(*) FROM room_candidates c
-         WHERE c.room_id = r.id)                                  AS deck
+         WHERE c.room_id = r.id AND c.round = r.round)             AS deck
      FROM rooms r WHERE r.id = $1`,
     [roomId],
   );
@@ -83,11 +91,13 @@ export async function settleIfAllDone(roomId: string, broadcast: Broadcast): Pro
   if (!p || p.state !== "ACTIVE") return;
   const roster = Number(p.roster);
   if (Number(p.total) < roster * Number(p.deck)) return;
-  await settle(roomId, p.round, roster, broadcast);
+  // An engaged table that rejected everything gets fresh picks.
+  await settle(roomId, p.round, roster, broadcast, { allowOvertime: true });
 }
 
 export async function settle(
   roomId: string, round: number, threshold: number, broadcast: Broadcast,
+  options: { allowOvertime: boolean },
 ): Promise<void> {
   // The claim. ACTIVE -> TALLY happens exactly once per round because
   // only one UPDATE can find the row still in ACTIVE.
@@ -114,6 +124,13 @@ export async function settle(
     ? null
     : winners[Math.floor(Math.random() * winners.length)]!.candidate_id;
 
+  // Zero consensus from an engaged table: overtime — TALLY → ACTIVE with
+  // a fresh deck and a re-frozen roster, while rounds remain.
+  if (pick === null && options.allowOvertime && round < MAX_ROUNDS) {
+    if (await overtime(roomId, round, broadcast)) return;
+    // provider exhausted or lost the CAS: fall through to the verdict
+  }
+
   // Every later step is conditional too: a transition whose
   // precondition no longer holds (e.g. the host closed the room
   // mid-tally -> NO_RESULT) matches zero rows instead of rewinding it.
@@ -139,4 +156,50 @@ export async function settle(
     );
   }
   await broadcast(roomId);
+}
+
+/**
+ * TALLY → ACTIVE, round + 1. One transaction: the transition, the fresh
+ * deck, and the re-frozen roster land together or not at all. The
+ * transition is conditional on (TALLY, this round) — the same CAS shape
+ * as every other step, so a competing close/settle can't double-deal.
+ */
+async function overtime(roomId: string, round: number, broadcast: Broadcast): Promise<boolean> {
+  const client = await pool.connect();
+  let dealt = false;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ round: number }>(
+      `UPDATE rooms SET state = 'ACTIVE', round = round + 1
+        WHERE id = $1 AND state = 'TALLY' AND round = $2
+        RETURNING round`,
+      [roomId, round],
+    );
+    const next = rows[0]?.round;
+    if (next !== undefined) {
+      await dealDeck(client, roomId, next);
+      // Same people, new round: "present" is re-frozen from the previous
+      // roster, not from presence — nobody joins or leaves mid-game.
+      await client.query(
+        `INSERT INTO round_roster (room_id, round, user_id)
+         SELECT room_id, $2, user_id FROM round_roster
+          WHERE room_id = $1 AND round = $3`,
+        [roomId, next, round],
+      );
+      await client.query("COMMIT");
+      dealt = true;
+    } else {
+      await client.query("ROLLBACK");
+    }
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[settle] overtime failed, resolving instead:", err);
+  } finally {
+    client.release();
+  }
+  if (dealt) {
+    await markActivity(roomId); // the inactivity clock restarts with the round
+    await broadcast(roomId);
+  }
+  return dealt;
 }

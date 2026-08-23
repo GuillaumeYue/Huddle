@@ -1,18 +1,13 @@
 import { Router } from "express";
 import pg from "pg";
-import { MockRestaurantProvider, type CandidateProvider } from "./candidates.js";
 import { pool } from "./db.js";
+import { dealDeck } from "./deck.js";
 import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
 import { markActivity } from "./settlement.js";
 
 const UNIQUE_VIOLATION = "23505";
-
-/** Swapped for the Google Places provider in phase 5; nothing below
- *  this line knows or cares which one it is. */
-const provider: CandidateProvider = new MockRestaurantProvider();
-const DECK_SIZE = 10;
 
 /** Fire-and-forget push to everyone connected to the room. Deliberately
  *  not awaited: the HTTP response shouldn't wait on fan-out, and a
@@ -157,14 +152,7 @@ roomsRouter.post("/rooms/:id/start", async (req, res) => {
     );
     room = rows[0];
     if (room) {
-      const deck = await provider.fetchCandidates(DECK_SIZE);
-      for (const [position, candidate] of deck.entries()) {
-        await client.query(
-          `INSERT INTO room_candidates (room_id, candidate_id, position, title, metadata)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [room.id, candidate.id, position, candidate.title, candidate.metadata],
-        );
-      }
+      await dealDeck(client, room.id, room.round);
       // Freeze the roster — "present" is decided here, by fact: whoever
       // is in the room as the round starts IS the denominator, for the
       // whole round, regardless of what their WiFi does later.

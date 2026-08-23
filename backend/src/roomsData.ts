@@ -63,7 +63,7 @@ export interface RoomPayload {
      *  decision is the "definition of present" fork. */
     connected: boolean;
   }[];
-  /** The shared deck; present from ACTIVE onward, absent in LOBBY. */
+  /** The CURRENT round's shared deck; present from ACTIVE onward. */
   candidates?: {
     id: string;
     title: string;
@@ -75,12 +75,13 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
   const { rows: participants } = await pool.query<ParticipantRow>(
     `SELECT rp.user_id, u.display_name, rp.joined_at,
             (SELECT count(*) FROM swipes s
-              WHERE s.room_id = rp.room_id AND s.user_id = rp.user_id) AS completed
+              WHERE s.room_id = rp.room_id AND s.user_id = rp.user_id
+                AND s.round = $2) AS completed
        FROM room_participants rp
        JOIN users u ON u.id = rp.user_id
       WHERE rp.room_id = $1
       ORDER BY rp.joined_at`,
-    [room.id],
+    [room.id, room.round],
   );
   if (!isRoomState(room.state)) {
     // The CHECK constraint makes this unreachable; the guard keeps the
@@ -89,8 +90,8 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
   }
   const { rows: candidates } = await pool.query<CandidateRow>(
     `SELECT candidate_id, title, metadata
-       FROM room_candidates WHERE room_id = $1 ORDER BY position`,
-    [room.id],
+       FROM room_candidates WHERE room_id = $1 AND round = $2 ORDER BY position`,
+    [room.id, room.round],
   );
   // Presence lives in Redis (live state, rebuildable); one pipelined
   // EXISTS per participant.

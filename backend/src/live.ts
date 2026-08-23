@@ -362,20 +362,24 @@ class RoomHub {
     if (typeof msg.candidateId !== "string") return;
     if (msg.decision !== "YES" && msg.decision !== "NO") return;
 
-    const { rows } = await pool.query<{ state: string }>(
-      "SELECT state FROM rooms WHERE id = $1 AND closed_at IS NULL",
+    const { rows } = await pool.query<{ state: string; round: number }>(
+      "SELECT state, round FROM rooms WHERE id = $1 AND closed_at IS NULL",
       [roomId],
     );
     const state = rows[0]?.state;
-    if (!state || !isRoomState(state) || !acceptsSwipes(state)) return;
+    const round = rows[0]?.round;
+    if (!state || round === undefined || !isRoomState(state) || !acceptsSwipes(state)) return;
 
     let inserted = false;
     try {
+      // The verdict is filed under the room's CURRENT round — a swipe
+      // that relied on the column default would land in round 1 forever
+      // (found while wiring overtime: round-2 votes counted for nothing).
       const { rowCount } = await pool.query(
-        `INSERT INTO swipes (room_id, user_id, candidate_id, decision)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO swipes (room_id, round, user_id, candidate_id, decision)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (room_id, round, user_id, candidate_id) DO NOTHING`,
-        [roomId, conn.userId, msg.candidateId, msg.decision],
+        [roomId, round, conn.userId, msg.candidateId, msg.decision],
       );
       inserted = rowCount === 1;
     } catch {

@@ -129,6 +129,10 @@ struct RoomSessionView: View {
                     viewModel.sendSwipe(candidate: candidate, decision: decision)
                 }
             )
+            // A new round is a new deck: re-key the view so SwiftUI
+            // rebuilds its @State DeckViewModel instead of keeping the
+            // finished one on screen.
+            .id(viewModel.room.round)
         }
         .toolbar(.hidden, for: .navigationBar)
     }
@@ -137,8 +141,16 @@ struct RoomSessionView: View {
     @ViewBuilder
     private var othersProgress: some View {
         let others = viewModel.room.participants.filter { $0.userId != viewModel.myUserId }
-        if !others.isEmpty {
+        if !others.isEmpty || viewModel.room.round > 1 {
             HStack(spacing: 14) {
+                if viewModel.room.round > 1 {
+                    Text("Round \(viewModel.room.round) · fresh picks")
+                        .font(.system(.caption, design: .rounded, weight: .bold))
+                        .foregroundStyle(Color(.systemPink))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(.systemPink).opacity(0.12), in: Capsule())
+                }
                 ForEach(others) { participant in
                     HStack(spacing: 5) {
                         Circle()
