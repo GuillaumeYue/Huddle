@@ -3,6 +3,7 @@ import { isDatabaseUp } from "./db.js";
 import { devRouter } from "./dev.js";
 import { isRedisUp } from "./redis.js";
 import { roomsRouter } from "./rooms.js";
+import { instanceId, isTimerLeader } from "./timer.js";
 
 /**
  * The Express app, separated from the listening socket (src/index.ts).
@@ -25,6 +26,8 @@ export function createApp(): express.Express {
       status: ok ? "ok" : "degraded",
       db: dbUp ? "up" : "down",
       redis: redisUp ? "up" : "down",
+      instance: instanceId,
+      timerLeader: isTimerLeader(),
       uptimeSeconds: Math.round(process.uptime()),
     });
   });

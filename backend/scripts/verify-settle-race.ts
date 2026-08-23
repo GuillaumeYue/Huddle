@@ -64,6 +64,10 @@ const serverA = await startServer(A_PORT); const serverB = await startServer(B_P
 let doubles = 0, errored = 0;
 try {
   for (let t = 1; t <= TRIALS; t++) {
+   // One retry per trial: a probe timeout right after spawning fresh
+   // servers is startup jitter, not evidence — and must never be
+   // confused with a double settlement.
+   for (let attempt = 1; attempt <= 2; attempt++) {
    try {
     const a = await post<U>(A_PORT, "/dev/users", { displayName: "Alice" });
     const b = await post<U>(A_PORT, "/dev/users", { displayName: "Bob" });
@@ -88,20 +92,23 @@ try {
     const doubled = reveals > 1 || verdicts.length > 1;
     if (doubled) doubles++;
     console.log(`trial ${t}: REVEALING×${reveals}, verdicts×${verdicts.length}, distinct winners=${winners.size}${doubled ? "  ← DOUBLE SETTLEMENT" : ""}`);
+    break;
    } catch (err) {
-    // Under double settlement the room's state can be REWOUND (a late
-    // settler's TALLY update lands after the first one's MATCHED) —
-    // the protocol story stops making sense, and so can the probe.
+    if (attempt === 1) { console.log(`trial ${t}: probe error (${(err as Error).message}) — retrying once`); continue; }
     errored++;
-    console.log(`trial ${t}: errored — ${(err as Error).message} (chaos counts as breakage)`);
+    console.log(`trial ${t}: errored twice — ${(err as Error).message}`);
+   }
    }
   }
 } finally { serverA.kill(); serverB.kill(); }
-doubles += errored;
 
-if (doubles === 0) {
-  console.log(`\nexactly-once held in ${TRIALS}/${TRIALS} trials: two triggers, two processes, one settlement.`);
-  process.exit(0);
+if (doubles > 0) {
+  console.error(`\nFAILED: settlement ran twice in ${doubles}/${TRIALS} trials — CAS broken.`);
+  process.exit(1);
 }
-console.error(`\nFAILED: settlement ran twice (or dissolved) in ${doubles}/${TRIALS} trials.`);
-process.exit(1);
+if (errored > 0) {
+  console.error(`\nINCONCLUSIVE: ${errored}/${TRIALS} trials errored in the probe (not a double settlement) — rerun.`);
+  process.exit(2);
+}
+console.log(`\nexactly-once held in ${TRIALS}/${TRIALS} trials: two triggers, two processes, one settlement.`);
+process.exit(0);

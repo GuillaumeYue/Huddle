@@ -1,12 +1,11 @@
 /**
- * Trigger B — the inactivity timeout. Two spawned processes, time
- * shrunk via env (inactivity 2s, heartbeat 1s, reveal 200ms).
+ * Trigger B — the distributed inactivity timer. Two spawned processes,
+ * time shrunk via env (inactivity 2s, tick 500ms → lease 1.5s).
  *
- * NAIVE PHASE: each process times out the rooms it hosts. Works while
- * someone is connected — and the final check DEMONSTRATES THE BREAK:
- * a room whose members have all disconnected is hosted by nobody, so
- * it stays ACTIVE forever, which is precisely the situation the
- * timeout exists to rescue. Exits 0 while the stuck room is observed.
+ * Asserts: a room still settles when SOMEONE is connected, when NOBODY
+ * is connected (the hosted-timer ghost, in history), that exactly one
+ * process holds the sweeper lease, and that SIGKILLing the holder
+ * hands the lease to the survivor in time to settle the next room.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import WebSocket from "ws";
@@ -97,13 +96,35 @@ try {
   const r2 = await startedRoom();
   r2.alice.ws.close(); r2.bob.ws.close();
   await sleep(INACTIVITY_MS + 2500);
-  const state = await getState(A_PORT, r2.room.id);
-  if (state === "ACTIVE") {
-    console.log("break observed  STUCK: everyone left, nobody hosts the room, nobody times it out");
-    console.log("\nthe timer must belong to the ROOM, not to whichever process happens to hold a socket.");
-  } else {
-    console.error(`NOT BROKEN (unexpected for the hosted timer): state=${state}`);
-    process.exit(1);
-  }
+  check("nobody home: the leased sweeper still settles the orphaned room",
+    terminal(await getState(A_PORT, r2.room.id)));
+
+  // 3. Exactly one sweeper holds the lease.
+  const health = async (port: number) =>
+    (await (await fetch(`http://localhost:${port}/health`)).json()) as { timerLeader: boolean };
+  const [ha, hb] = await Promise.all([health(A_PORT), health(B_PORT)]);
+  check("exactly one process holds the sweeper lease",
+    ha.timerLeader !== hb.timerLeader);
+
+  // 4. Failover: kill the holder; the survivor must take the lease and
+  //    settle the next orphaned room on its own.
+  const leaderIsA = ha.timerLeader;
+  (leaderIsA ? serverA : serverB).kill("SIGKILL");
+  const survivor = leaderIsA ? B_PORT : A_PORT;
+  console.log(`    … SIGKILLed the lease holder (${leaderIsA ? "A" : "B"}); survivor is ${leaderIsA ? "B" : "A"}`);
+  const a3 = await post<U>(survivor, "/dev/users", { displayName: "Solo" });
+  const room3 = await post<Room>(survivor, "/rooms", { hostId: a3.id });
+  const solo = connect(survivor, room3.id, a3.id);
+  await solo.until((e) => e.type === "ROOM_STATE");
+  await post(survivor, `/rooms/${room3.id}/start`, { userId: a3.id });
+  await solo.until(isActive);
+  solo.ws.close();
+  await sleep(INACTIVITY_MS + 1500 /* lease */ + 2000);
+  check("lease failover: the survivor took over and settled the room",
+    terminal(await getState(survivor, room3.id)));
+  check("the survivor now reports itself as sweeper leader",
+    (await health(survivor)).timerLeader === true);
+
+  console.log("\nthe timer belongs to the room; the lease picks who rings it; CAS guarantees it rings once.");
 } finally { serverA.kill(); serverB.kill(); }
 process.exit(0);
