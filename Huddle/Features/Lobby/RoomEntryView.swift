@@ -12,6 +12,7 @@ struct RoomEntryView: View {
     @State private var busy = false
     @State private var errorMessage: String?
     @State private var room: RoomDTO?
+    @State private var confirmingDeletion = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -103,6 +104,30 @@ struct RoomEntryView: View {
             }
             errorLine
             Spacer()
+            // App Review mandate: in-app account deletion. Server-side it
+            // anonymizes; locally we forget everything and return to the
+            // name gate.
+            Button("Delete account", role: .destructive) {
+                confirmingDeletion = true
+            }
+            .font(.system(.footnote, design: .rounded, weight: .semibold))
+            .confirmationDialog(
+                "Delete your account? Your name disappears from past rooms and your taste profile is erased.",
+                isPresented: $confirmingDeletion, titleVisibility: .visible,
+            ) {
+                Button("Delete account", role: .destructive) {
+                    Task {
+                        do {
+                            if let id = session.userId {
+                                try await api.deleteAccount(userId: id)
+                            }
+                            session.wipe()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            }
         }
     }
 

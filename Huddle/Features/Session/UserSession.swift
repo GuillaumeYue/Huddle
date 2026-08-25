@@ -41,6 +41,17 @@ final class UserSession {
 
     var isRegistered: Bool { userId != nil }
 
+    /// Account deleted: forget everything local. The server has already
+    /// anonymized the durable side.
+    func wipe() {
+        for key in ["dev.userId", "dev.displayName", "session.currentRoomId"] {
+            defaults.removeObject(forKey: key)
+        }
+        userId = nil
+        displayName = nil
+        currentRoomId = nil
+    }
+
     func register(displayName name: String) async throws {
         let user = try await api.createUser(displayName: name)
         defaults.set(user.id, forKey: "dev.userId")

@@ -6,6 +6,7 @@ import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
 import { markActivity, resolvePick } from "./settlement.js";
+import { redisPub } from "./redis.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -346,4 +347,71 @@ roomsRouter.get("/rooms/:id", async (req, res) => {
     return;
   }
   res.json(await roomPayload(room));
+});
+
+/**
+ * Session history: the rooms this user has finished, newest first.
+ * "Where did we eat last time" is the product's memory — and the seed
+ * of the v2 re-invite feature (the people you always eat with are
+ * already in these rows; no social graph needed).
+ */
+roomsRouter.get("/users/:id/history", async (req, res) => {
+  const userId = req.params.id;
+  if (!isUuid(userId)) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  const { rows } = await pool.query<{
+    id: string; state: string; closed_at: string; round: number;
+    result_title: string | null; participant_count: string;
+  }>(
+    `SELECT r.id, r.state, r.closed_at, r.round,
+            rc.title AS result_title,
+            (SELECT count(*) FROM room_participants rp2
+              WHERE rp2.room_id = r.id) AS participant_count
+       FROM rooms r
+       JOIN room_participants rp ON rp.room_id = r.id AND rp.user_id = $1
+       LEFT JOIN room_candidates rc
+         ON rc.room_id = r.id AND rc.candidate_id = r.result_candidate_id
+      WHERE r.closed_at IS NOT NULL
+      ORDER BY r.closed_at DESC
+      LIMIT 30`,
+    [userId],
+  );
+  res.json({
+    rooms: rows.map((r) => ({
+      id: r.id,
+      state: r.state,
+      closedAt: r.closed_at,
+      resultTitle: r.result_title ?? undefined,
+      participantCount: Number(r.participant_count),
+    })),
+  });
+});
+
+/**
+ * Account deletion (App Review mandate). Semantics: ANONYMIZE, don't
+ * cascade — the account and its PII vanish (name, future apple_sub,
+ * taste profile), but rooms/swipes/picks stay: those are the GROUP's
+ * shared history, not one member's property. A deleted user reads as
+ * "Deleted user" in old rosters. SIWA later swaps how the caller is
+ * identified; these semantics stand.
+ */
+roomsRouter.delete("/users/:id", async (req, res) => {
+  const userId = req.params.id;
+  if (!isUuid(userId)) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  const { rowCount } = await pool.query(
+    `UPDATE users SET display_name = 'Deleted user', apple_sub = NULL
+      WHERE id = $1`,
+    [userId],
+  );
+  if (rowCount !== 1) {
+    res.status(404).json({ error: "user not found" });
+    return;
+  }
+  await redisPub.del(`reco:profile:${userId}`); // the taste profile IS PII
+  res.status(204).end();
 });

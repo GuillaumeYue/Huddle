@@ -6,9 +6,8 @@ import Foundation
 struct HuddleAPIClient: Sendable {
 
     /// Simulator shares the Mac's network, so localhost reaches the dev
-    /// server directly (ATS exempts localhost from its HTTPS rule).
-    /// A real device needs the Mac's LAN IP here — revisited at TestFlight.
-    var baseURL = URL(string: "http://localhost:3000")!
+    /// server (ATS-exempt); Release builds point at the deployed origin.
+    var baseURL = APIConfig.httpBase
 
     enum APIError: Error, LocalizedError {
         /// The bytes never made it (offline, refused, timeout).
@@ -60,6 +59,23 @@ struct HuddleAPIClient: Sendable {
     func pick(roomId: String, userId: String, candidateId: String) async throws -> RoomDTO {
         try await post("/rooms/\(roomId)/pick",
                        PickBody(userId: userId, candidateId: candidateId))
+    }
+
+    func history(userId: String) async throws -> HistoryDTO {
+        try await get("/users/\(userId)/history")
+    }
+
+    /// Account deletion (anonymization server-side). 204, no body.
+    func deleteAccount(userId: String) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "/users/\(userId)"))
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let message = (try? JSONDecoder().decode(ServerErrorDTO.self, from: data))?.error
+                ?? "Server error (\(status))"
+            throw APIError.server(status: status, message: message)
+        }
     }
 
     func kick(roomId: String, hostId: String, targetUserId: String) async throws -> RoomDTO {

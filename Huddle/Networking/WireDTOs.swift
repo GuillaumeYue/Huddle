@@ -117,3 +117,17 @@ struct StartRoomBody: Encodable { let userId: String }
 struct CloseRoomBody: Encodable { let userId: String }
 struct KickBody: Encodable { let hostId: String, targetUserId: String }
 struct PickBody: Encodable { let userId: String, candidateId: String }
+
+
+/// Session history: the finished rooms this user was part of.
+struct HistoryDTO: Decodable {
+    let rooms: [HistoryRoomDTO]
+}
+
+struct HistoryRoomDTO: Decodable, Identifiable, Hashable {
+    let id: String
+    let state: RoomState
+    let closedAt: String
+    let resultTitle: String?
+    let participantCount: Int
+}

@@ -126,6 +126,15 @@ struct HomeView: View {
                     .background(Color(.secondarySystemBackground), in: Capsule())
                     .foregroundStyle(Color.primary)
             }
+
+            NavigationLink {
+                HistoryView()
+            } label: {
+                Text("History")
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 2)
         }
     }
 }

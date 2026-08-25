@@ -1,0 +1,20 @@
+# Production image for both entrypoints:
+#   server:  node dist/index.js   (default CMD)
+#   worker:  node dist/worker.js  (override the command in the platform)
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+COPY migrations ./migrations
+EXPOSE 3000
+CMD ["node", "dist/index.js"]

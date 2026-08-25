@@ -7,8 +7,8 @@ import Foundation
 /// scope; dropping the stream (task cancellation) tears the socket down.
 struct RoomSocket: Sendable {
 
-    /// ws:// for the dev server; localhost is ATS-exempt like http://.
-    var baseURL = URL(string: "ws://localhost:3000")!
+    /// ws in Debug, wss against the deployed origin in Release.
+    var baseURL = APIConfig.wsBase
 
     final class Connection: Sendable {
         private let task: URLSessionWebSocketTask
