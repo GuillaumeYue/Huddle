@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { MockRestaurantProvider, type CandidateProvider } from "./candidates.js";
+import { GooglePlacesProvider, placesConfigured } from "./googlePlaces.js";
 
 /**
  * Dealing a deck — shared by the start transaction and by overtime.
@@ -8,9 +9,12 @@ import { MockRestaurantProvider, type CandidateProvider } from "./candidates.js"
  */
 export const DECK_SIZE = 10;
 
-/** Swapped for the Google Places provider in phase 5; nothing here
- *  knows or cares which one it is. */
-const provider: CandidateProvider = new MockRestaurantProvider();
+/** Real data when a key is configured, the mock otherwise — same
+ *  contract, and nothing downstream knows or cares which one it is. */
+const provider: CandidateProvider = placesConfigured()
+  ? new GooglePlacesProvider()
+  : new MockRestaurantProvider();
+console.log(`[deck] candidate provider: ${placesConfigured() ? "Google Places" : "mock"}`);
 
 export async function dealDeck(
   client: pg.PoolClient, roomId: string, round: number,
