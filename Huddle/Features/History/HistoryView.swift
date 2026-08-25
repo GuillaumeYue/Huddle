@@ -1,3 +1,4 @@
+import HuddleCore
 import SwiftUI
 
 /// Where the table has been: finished rooms, newest first. The seed of
