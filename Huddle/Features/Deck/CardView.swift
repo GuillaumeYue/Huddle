@@ -8,23 +8,58 @@ import SwiftUI
 /// priceLevel, rating, distanceMeters). That knowledge is allowed here
 /// and in providers, never inside HuddleCore.
 ///
-/// No photos yet (mock data). The backdrop is a deterministic mesh
-/// gradient derived from the candidate id; when the Places provider lands
-/// in phase 5, only `backdrop` changes to an async photo — layout stays.
+/// The backdrop: the real photo when the provider resolved one
+/// (metadata "photoUrl", a keyless public link — the API key never
+/// reaches this app), with the deterministic mesh gradient as loading
+/// placeholder and no-photo fallback. Google requires crediting the
+/// photographer ("photoAttribution") — the tiny caption is a term of
+/// service, not decoration.
 struct CardView: View {
     let candidate: Candidate
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             backdrop
+            photoLayer
             scrim
             info
+        }
+        .overlay(alignment: .topTrailing) {
+            if let credit = candidate.metadata["photoAttribution"],
+               candidate.metadata["photoUrl"] != nil {
+                Text("Photo: \(credit)")
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.25), in: Capsule())
+                    .padding(10)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(color: .black.opacity(0.16), radius: 20, y: 12)
     }
 
     // MARK: Backdrop
+
+    @ViewBuilder
+    private var photoLayer: some View {
+        if let url = candidate.metadata["photoUrl"].flatMap(URL.init(string:)) {
+            GeometryReader { geo in
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeIn(duration: 0.25), value: url)
+            }
+        }
+    }
 
     private var backdrop: some View {
         let p = Palette.for(candidate.id)

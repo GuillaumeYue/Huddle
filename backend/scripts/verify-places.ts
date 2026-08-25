@@ -27,6 +27,9 @@ const excl = new Set(first.map((c) => c.id));
 const overtimeDeck = await provider.fetchCandidates(10, excl);
 check("an excluding set yields only unseen candidates",
   overtimeDeck.every((c) => !excl.has(c.id)));
+const withPhotos = first.filter((c) => c.metadata["photoUrl"]?.startsWith("https://"));
+check(`photos resolved to keyless public urls (${withPhotos.length}/10)`,
+  withPhotos.length >= 5);
 
 console.log("\nreal Montréal, via cache:");
 for (const c of first) {

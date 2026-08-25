@@ -49,7 +49,7 @@ export class GooglePlacesProvider implements CandidateProvider {
     // ~1km grid: rounding to 0.01° keeps every room in the same cell on
     // the same cache entry.
     const cell = `${LAT.toFixed(2)}:${LNG.toFixed(2)}:${RADIUS_M}:${LANG}`;
-    const key = `places:v1:${cell}`;
+    const key = `places:v2:${cell}`; // v2: seeds now carry photo urls
     const cached = await this.redis.get(key);
     if (cached) return JSON.parse(cached) as CandidateSeed[];
 
@@ -63,6 +63,7 @@ export class GooglePlacesProvider implements CandidateProvider {
         "X-Goog-FieldMask": [
           "places.id", "places.displayName", "places.rating",
           "places.priceLevel", "places.primaryTypeDisplayName", "places.location",
+          "places.photos",
         ].join(","),
       },
       body: JSON.stringify({
@@ -81,9 +82,33 @@ export class GooglePlacesProvider implements CandidateProvider {
       throw new Error(`Places API ${res.status}: ${(await res.text()).slice(0, 300)}`);
     }
     const body = await res.json() as { places?: PlaceDTO[] };
-    const seeds = (body.places ?? [])
+    const places = body.places ?? [];
+    const seeds = places
       .map((p) => mapPlace(p, LAT, LNG))
       .filter((s): s is CandidateSeed => s !== null);
+
+    // Photos: a SEPARATELY BILLED second request per place (~1 photo
+    // SKU each), paid once per cell per TTL thanks to the cache. The
+    // media endpoint with skipHttpRedirect resolves to a public
+    // googleusercontent URL — the API key never reaches a client.
+    await Promise.all(seeds.map(async (seed) => {
+      const photo = places.find((p) => p.id === seed.id)?.photos?.[0];
+      if (!photo?.name) return;
+      try {
+        const media = await fetch(
+          `https://places.googleapis.com/v1/${photo.name}/media?maxWidthPx=900&skipHttpRedirect=true`,
+          { headers: { "X-Goog-Api-Key": API_KEY } },
+        );
+        if (!media.ok) return; // no photo is a fine photo
+        const { photoUri } = await media.json() as { photoUri?: string };
+        if (photoUri) {
+          seed.metadata["photoUrl"] = photoUri;
+          const credit = photo.authorAttributions?.[0]?.displayName;
+          if (credit) seed.metadata["photoAttribution"] = credit;
+        }
+      } catch { /* graceful: the mesh gradient is the fallback */ }
+    }));
+
     if (seeds.length > 0) {
       await this.redis.set(key, JSON.stringify(seeds), "EX", CACHE_TTL_S);
     }

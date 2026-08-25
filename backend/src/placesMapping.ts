@@ -12,6 +12,10 @@ export interface PlaceDTO {
   priceLevel?: string;
   primaryTypeDisplayName?: { text?: string };
   location?: { latitude?: number; longitude?: number };
+  photos?: {
+    name?: string;
+    authorAttributions?: { displayName?: string }[];
+  }[];
 }
 
 const PRICE: Record<string, string> = {
