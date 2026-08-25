@@ -66,7 +66,10 @@ export class GooglePlacesProvider implements CandidateProvider {
         ].join(","),
       },
       body: JSON.stringify({
-        includedTypes: ["restaurant"],
+        // Primary type, not type-list membership: a hotel with a dining
+        // room has "restaurant" among its types — includedTypes let the
+        // Fairmont and a public square onto the deck in field testing.
+        includedPrimaryTypes: ["restaurant"],
         maxResultCount: 20,
         languageCode: LANG,
         locationRestriction: {
