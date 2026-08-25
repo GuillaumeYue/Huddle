@@ -27,14 +27,16 @@
         "displayName": "Alice",
         "isHost": true,
         "completedCount": 10,
-        "connected": true
+        "connected": true,
+        "hasPicked": false
       },
       {
         "userId": "07dd9958-e746-4654-851d-8061147c8e7c",
         "displayName": "Bob",
         "isHost": false,
         "completedCount": 10,
-        "connected": true
+        "connected": true,
+        "hasPicked": false
       }
     ],
     "candidates": [

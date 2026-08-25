@@ -35,6 +35,8 @@ struct RoomDTO: Decodable, Identifiable, Hashable {
 
 struct RoomResultDTO: Decodable, Hashable {
     let candidateId: String
+    /// How many hidden picks the winner received, when any were cast.
+    let pickedBy: Int?
 }
 
 struct TallyEntryDTO: Decodable, Hashable {
@@ -58,6 +60,8 @@ struct RoomParticipantDTO: Decodable, Identifiable, Hashable {
     let completedCount: Int
     /// Live-socket presence, as the server currently believes it.
     let connected: Bool
+    /// Cast their hidden pick (REVEALING only); the pick stays secret.
+    let hasPicked: Bool
 
     var id: String { userId }
 }

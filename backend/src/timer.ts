@@ -93,7 +93,7 @@ async function tick(broadcast: Broadcast): Promise<void> {
     if (state === "ACTIVE") {
       if (await isInactive(id)) await settleByTimeout(id, broadcast);
     } else if (await isInactive(id, PICK_TIMEOUT_MS + 5_000)) {
-      await resolveReveal(id, null, broadcast);
+      await resolveReveal(id, broadcast);
     }
   }
 }

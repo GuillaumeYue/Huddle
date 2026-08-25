@@ -5,7 +5,7 @@ import { dealDeck } from "./deck.js";
 import { generateJoinCode } from "./joinCode.js";
 import { hub } from "./live.js";
 import { roomPayload, type RoomRow } from "./roomsData.js";
-import { markActivity, resolveReveal } from "./settlement.js";
+import { markActivity, resolvePick } from "./settlement.js";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -287,10 +287,10 @@ roomsRouter.post("/rooms/:id/close", async (req, res) => {
 });
 
 /**
- * The blind pick. When several candidates all reached consensus the
- * room sits in REVEALING with a `tie`; any roster member may tap one.
- * First tap wins — the row decides, later taps get 409. "User-chosen
- * randomness": the table picks, the server only enforces one verdict.
+ * The blind pick, decision C: EVERY roster member casts one hidden
+ * pick; when the roster is complete (or the pick timeout fires) the
+ * most-picked card wins, exact top ties broken by server random. A
+ * member's first cast is final (PK); a second cast gets 409.
  */
 roomsRouter.post("/rooms/:id/pick", async (req, res) => {
   const roomId = req.params.id;
@@ -310,7 +310,8 @@ roomsRouter.post("/rooms/:id/pick", async (req, res) => {
     res.status(403).json({ error: "only members of this round may pick" });
     return;
   }
-  const outcome = await resolveReveal(roomId, candidateId, (id) => hub.broadcastRoom(id));
+  const outcome = await resolvePick(
+    roomId, userId, candidateId, (id) => hub.broadcastRoom(id));
   const { rows } = await pool.query<RoomRow>("SELECT * FROM rooms WHERE id = $1", [roomId]);
   const room = rows[0];
   if (!room) { res.status(404).json({ error: "room not found" }); return; }
@@ -318,8 +319,12 @@ roomsRouter.post("/rooms/:id/pick", async (req, res) => {
     res.status(400).json({ error: "that candidate is not part of the tie" });
     return;
   }
-  if (outcome === "already") {
-    res.status(409).json({ error: "the table already picked" });
+  if (outcome === "already_picked") {
+    res.status(409).json({ error: "you already picked" });
+    return;
+  }
+  if (outcome === "closed") {
+    res.status(409).json({ error: "the reveal is already decided" });
     return;
   }
   res.json(await roomPayload(room));

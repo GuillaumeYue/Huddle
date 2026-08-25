@@ -66,19 +66,32 @@ struct RoomSessionView: View {
             Spacer(minLength: 8)
             Text("Everyone said yes to \(tied.count)")
                 .font(.system(.title2, design: .rounded, weight: .heavy))
-            Text("Tap a card to pick blind — first tap at the table wins.")
+            Text(viewModel.iPicked
+                 ? "Pick cast — waiting for the table (\(viewModel.pickedCount)/\(viewModel.room.participants.count) picked)"
+                 : "Everyone picks one card blind — the most-picked wins.")
                 .font(.system(.subheadline, design: .rounded))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .contentTransition(.numericText())
+                .animation(.snappy, value: viewModel.pickedCount)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], spacing: 12) {
                 ForEach(tied) { candidate in
                     Button {
                         Task { await viewModel.pick(candidate) }
                     } label: {
                         faceDownCard
+                            .overlay(alignment: .topTrailing) {
+                                if viewModel.pickedCandidateId == candidate.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 22, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(6)
+                                }
+                            }
+                            .opacity(viewModel.iPicked && viewModel.pickedCandidateId != candidate.id ? 0.45 : 1)
                     }
                     .buttonStyle(.plain)
-                    .disabled(viewModel.isPicking)
+                    .disabled(viewModel.isPicking || viewModel.iPicked)
                 }
             }
             .padding(.horizontal, 8)
@@ -138,6 +151,11 @@ struct RoomSessionView: View {
             if let winner = viewModel.winner {
                 Text("It's a match!")
                     .font(.system(.largeTitle, design: .rounded, weight: .heavy))
+                if let pickedBy = viewModel.room.result?.pickedBy {
+                    Text("Picked by \(pickedBy) of \(viewModel.room.participants.count)")
+                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 CardView(candidate: winner)
                     .aspectRatio(3 / 4.2, contentMode: .fit)
                     .padding(.horizontal, 8)

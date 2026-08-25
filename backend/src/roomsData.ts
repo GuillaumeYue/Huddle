@@ -46,8 +46,9 @@ export interface RoomPayload {
   state: RoomState;
   /** Current round; overtime bumps it. Swipes and the roster key on it. */
   round: number;
-  /** Settled outcome, present only in MATCHED. */
-  result?: { candidateId: string };
+  /** Settled outcome, present only in MATCHED. pickedBy = how many
+   *  hidden picks the winner received, when any were cast. */
+  result?: { candidateId: string; pickedBy?: number };
   /** Consensus threshold (v1: the frozen roster size). From TALLY on. */
   threshold?: number;
   /** Yes-counts per candidate for the current round, most first. From
@@ -71,6 +72,9 @@ export interface RoomPayload {
      *  the inactivity timeout — NEVER the tally denominator; that
      *  decision is the "definition of present" fork. */
     connected: boolean;
+    /** Has this member cast their hidden pick (REVEALING only). The
+     *  pick itself stays secret until the verdict — only the fact. */
+    hasPicked: boolean;
   }[];
   /** The CURRENT round's shared deck; present from ACTIVE onward. */
   candidates?: {
@@ -102,6 +106,13 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
        FROM room_candidates WHERE room_id = $1 AND round = $2 ORDER BY position`,
     [room.id, room.round],
   );
+  const pickedSet = new Set<string>();
+  if (room.state === "REVEALING") {
+    const { rows: cast } = await pool.query<{ user_id: string }>(
+      "SELECT user_id FROM picks WHERE room_id = $1 AND round = $2",
+      [room.id, room.round]);
+    for (const c of cast) pickedSet.add(c.user_id);
+  }
   // Presence lives in Redis (live state, rebuildable); one pipelined
   // EXISTS per participant.
   const flags = participants.length === 0 ? [] :
@@ -121,10 +132,17 @@ export async function roomPayload(room: RoomRow): Promise<RoomPayload> {
       isHost: p.user_id === room.host_id,
       completedCount: Number(p.completed),
       connected: Boolean(flags?.[i]?.[1]),
+      hasPicked: pickedSet.has(p.user_id),
     })),
   };
   if (room.result_candidate_id) {
     payload.result = { candidateId: room.result_candidate_id };
+    const { rows: pb } = await pool.query<{ n: string }>(
+      `SELECT count(*) AS n FROM picks
+        WHERE room_id = $1 AND round = $2 AND candidate_id = $3`,
+      [room.id, room.round, room.result_candidate_id]);
+    const pickedBy = Number(pb[0]?.n ?? 0);
+    if (pickedBy > 0) payload.result.pickedBy = pickedBy;
   }
   if (room.state !== "LOBBY" && room.state !== "ACTIVE") {
     const [{ rows: tally }, { rows: roster }] = await Promise.all([

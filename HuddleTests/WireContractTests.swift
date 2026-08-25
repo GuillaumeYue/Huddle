@@ -38,6 +38,7 @@ struct WireContractTests {
         #expect(room.participants[0].isHost)
         #expect(room.participants[0].completedCount == 7)
         #expect(room.participants[0].connected)
+        #expect(!room.participants[0].hasPicked)
         #expect(room.participants[1].displayName == "Bob")
         #expect(!room.participants[1].isHost)
         #expect(room.participants[1].completedCount == 3)

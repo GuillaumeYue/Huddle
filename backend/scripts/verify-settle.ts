@@ -97,16 +97,22 @@ async function playRoom(aliceYesPerRound: number[], pick: "alice" | "race" | "no
 
   let picked: string | undefined; let statuses: number[] = [];
   if (tie.length > 1 && pick === "alice") {
+    // Decision C: BOTH members cast hidden picks for the same card —
+    // plurality makes the verdict deterministic. Alice trying to cast
+    // twice is the 409 now (first cast is final), not another member.
     picked = tie[1]!;
     statuses = [await postStatus(`/rooms/${room.id}/pick`, { userId: a.id, candidateId: picked })];
-    statuses.push(await postStatus(`/rooms/${room.id}/pick`, { userId: b.id, candidateId: tie[0] }));
+    statuses.push(await postStatus(`/rooms/${room.id}/pick`, { userId: a.id, candidateId: tie[0] }));
+    statuses.push(await postStatus(`/rooms/${room.id}/pick`, { userId: b.id, candidateId: picked }));
   } else if (tie.length > 1 && pick === "race") {
+    // Simultaneous different picks: both are votes now (200 + 200);
+    // the roster completing fires the plurality resolution, and an
+    // exact 1–1 top tie falls to server random among the two.
     const [sa, sb] = await Promise.all([
       postStatus(`/rooms/${room.id}/pick`, { userId: a.id, candidateId: tie[0] }),
       postStatus(`/rooms/${room.id}/pick`, { userId: b.id, candidateId: tie[1] }),
     ]);
     statuses = [sa, sb];
-    picked = sa === 200 ? tie[0] : tie[1];
   }
   const final = await alice.until((e) => e.type === "ROOM_STATE" && (e.room?.state === "MATCHED" || e.room?.state === "NO_RESULT"), 25_000);
   check("terminal broadcast is followed by a clean 1000 hangup", (await alice.waitClosed()) === 1000);
@@ -123,23 +129,25 @@ check("verdict carries the tally and threshold",
 // 2. A tie: the table picks blind; the second tap gets 409.
 const r2 = await playRoom([3], "alice");
 check("three-way consensus → REVEALING carries a tie of 3", r2.tie.length === 3);
-check("Alice's blind pick resolves the tie: 200, then Bob's tap gets 409",
-  r2.statuses[0] === 200 && r2.statuses[1] === 409);
-check("the verdict is exactly the card Alice tapped",
-  r2.final.state === "MATCHED" && r2.final.result?.candidateId === r2.picked);
+check("first cast 200, second cast by the SAME member 409, partner's cast 200",
+  r2.statuses[0] === 200 && r2.statuses[1] === 409 && r2.statuses[2] === 200);
+check("unanimous hidden picks → that exact card wins, credited to both",
+  r2.final.state === "MATCHED" && r2.final.result?.candidateId === r2.picked
+  && r2.final.result?.pickedBy === 2);
 
 // 3. Two taps in the same instant: the row arbitrates — one 200, one 409.
 const r3 = await playRoom([2], "race");
-check("simultaneous picks: exactly one wins",
-  r3.statuses.filter((s) => s === 200).length === 1 && r3.statuses.includes(409));
-check("the verdict matches the winning tap", r3.final.result?.candidateId === r3.picked);
+check("simultaneous different picks: BOTH are votes (200 + 200)",
+  r3.statuses.filter((s) => s === 200).length === 2);
+check("a 1–1 top tie resolves at random among the tied pair, credited to one",
+  r3.tie.includes(r3.final.result?.candidateId ?? "") && r3.final.result?.pickedBy === 1);
 
 // 4. Overtime: zero consensus → round 2 with a disjoint deck → tie → pick.
 const r4 = await playRoom([0, 2], "alice");
 check("zero consensus → overtime round 2 (TALLY → ACTIVE)", r4.final.round === 2);
 check("overtime deals a fresh deck — no card from round 1",
   r4.decks[1]!.length === 10 && r4.decks[1]!.every((id) => !r4.decks[0]!.includes(id)));
-check("round-2 tie resolved by the table with a round-2 card",
+check("round-2 tie resolved by the table's unanimous picks with a round-2 card",
   r4.final.state === "MATCHED" && r4.final.result?.candidateId === r4.picked && r4.decks[1]!.includes(r4.picked!));
 
 // 5. The cap: zero consensus twice → NO_RESULT, tally still reported.

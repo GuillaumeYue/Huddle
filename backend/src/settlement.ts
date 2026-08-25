@@ -143,7 +143,7 @@ export async function settle(
   // the same CAS); if nobody does, the server picks for them. Either
   // way resolveReveal() is a no-op if someone already resolved it.
   await new Promise((r) => setTimeout(r, winners.length > 1 ? PICK_TIMEOUT_MS : REVEAL_MS));
-  await resolveReveal(roomId, null, broadcast);
+  await resolveReveal(roomId, broadcast);
 }
 
 async function winnersFor(roomId: string, round: number, threshold: number): Promise<string[]> {
@@ -162,14 +162,16 @@ export type RevealOutcome = "resolved" | "already" | "invalid";
 
 /**
  * REVEALING → MATCHED | NO_RESULT. Three callers, one arbiter:
- *   - settle() after the beat / pick timeout (chosen = null → random)
- *   - POST /rooms/:id/pick, a member's blind pick (chosen = their card)
+ *   - settle() after the beat / pick timeout
+ *   - resolvePick(), when the last roster member's hidden pick lands
  *   - the timer sweeper rescuing a REVEALING whose settler died
- * The CAS (state = REVEALING AND no result yet) makes them all safe to
- * race: exactly one verdict, the rest learn "already".
+ * Verdict (decision C): plurality of the cast hidden picks among the
+ * consensus winners; exact top ties — and the no-picks timeout case —
+ * fall to server random. The CAS (state = REVEALING AND no result yet)
+ * makes all callers safe to race: exactly one verdict.
  */
 export async function resolveReveal(
-  roomId: string, chosen: string | null, broadcast: Broadcast,
+  roomId: string, broadcast: Broadcast,
 ): Promise<RevealOutcome> {
   const { rows } = await pool.query<{ state: string; round: number; roster: string }>(
     `SELECT r.state, r.round,
@@ -181,10 +183,18 @@ export async function resolveReveal(
   const p = rows[0];
   if (!p || p.state !== "REVEALING") return "already";
   const winners = await winnersFor(roomId, p.round, Number(p.roster));
-  if (chosen !== null && !winners.includes(chosen)) return "invalid";
-  const pick = chosen ?? (winners.length === 0
+
+  const { rows: votes } = await pool.query<{ candidate_id: string; n: string }>(
+    `SELECT candidate_id, count(*) AS n FROM picks
+      WHERE room_id = $1 AND round = $2 GROUP BY candidate_id`,
+    [roomId, p.round],
+  );
+  const counts = new Map(votes.map((v) => [v.candidate_id, Number(v.n)]));
+  const top = Math.max(0, ...winners.map((w) => counts.get(w) ?? 0));
+  const pickPool = top > 0 ? winners.filter((w) => (counts.get(w) ?? 0) === top) : winners;
+  const pick = pickPool.length === 0
     ? null
-    : winners[Math.floor(Math.random() * winners.length)]!);
+    : pickPool[Math.floor(Math.random() * pickPool.length)]!;
 
   const { rowCount } = pick
     ? await pool.query(
@@ -250,4 +260,48 @@ async function overtime(roomId: string, round: number, broadcast: Broadcast): Pr
     await broadcast(roomId);
   }
   return dealt;
+}
+
+export type PickOutcome = "recorded" | "resolved" | "already_picked" | "invalid" | "closed";
+
+/**
+ * One member's hidden pick. First cast per (room, round, user) is final
+ * — the primary key says so. When the roster is complete, the same
+ * all-done shape as trigger A fires the resolution; two final picks
+ * landing on two processes both reach resolveReveal, and the CAS lets
+ * exactly one through.
+ */
+export async function resolvePick(
+  roomId: string, userId: string, candidateId: string, broadcast: Broadcast,
+): Promise<PickOutcome> {
+  const { rows } = await pool.query<{ state: string; round: number; roster: string }>(
+    `SELECT r.state, r.round,
+       (SELECT count(*) FROM round_roster rr
+         WHERE rr.room_id = r.id AND rr.round = r.round) AS roster
+     FROM rooms r WHERE r.id = $1`,
+    [roomId],
+  );
+  const p = rows[0];
+  if (!p || p.state !== "REVEALING") return "closed";
+  const winners = await winnersFor(roomId, p.round, Number(p.roster));
+  if (!winners.includes(candidateId)) return "invalid";
+
+  const { rowCount } = await pool.query(
+    `INSERT INTO picks (room_id, round, user_id, candidate_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (room_id, round, user_id) DO NOTHING`,
+    [roomId, p.round, userId, candidateId],
+  );
+  if (rowCount !== 1) return "already_picked";
+
+  const { rows: cast } = await pool.query<{ n: string }>(
+    "SELECT count(*) AS n FROM picks WHERE room_id = $1 AND round = $2",
+    [roomId, p.round],
+  );
+  if (Number(cast[0]?.n ?? 0) >= Number(p.roster)) {
+    await resolveReveal(roomId, broadcast);
+    return "resolved";
+  }
+  await broadcast(roomId); // hasPicked flips for the table
+  return "recorded";
 }

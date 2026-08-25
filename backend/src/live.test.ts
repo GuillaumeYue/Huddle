@@ -34,6 +34,7 @@ test("makeRoomStateEvent produces exactly the shared fixture", () => {
         isHost: true,
         completedCount: 7,
         connected: true,
+        hasPicked: false,
       },
       {
         userId: "07dd9958-e746-4654-851d-8061147c8e7c",
@@ -41,6 +42,7 @@ test("makeRoomStateEvent produces exactly the shared fixture", () => {
         isHost: false,
         completedCount: 3,
         connected: false,
+        hasPicked: false,
       },
     ],
     candidates: [
@@ -88,7 +90,7 @@ test("MATCHED snapshot with result produces exactly the shared fixture", () => {
     threshold: 2,
     tally: [{ candidateId: "mock-009", yes: 2 }, { candidateId: "mock-002", yes: 1 }],
     participants: base.room.participants.map((p) => ({
-      ...p, completedCount: 10, connected: true,
+      ...p, completedCount: 10, connected: true, hasPicked: false,
     })),
   };
   assert.deepStrictEqual(

@@ -85,6 +85,18 @@ final class RoomSessionViewModel {
         return tie.compactMap { id in deck.first { $0.id == id } }
     }
 
+    /// Decision C: everyone casts one hidden pick. The snapshot's
+    /// hasPicked is authoritative; the local flag bridges the beat
+    /// between our tap and the broadcast confirming it.
+    private(set) var pickedLocally = false
+    /// Which card *we* tapped — server keeps everyone's pick secret, so
+    /// the highlight is local knowledge only.
+    private(set) var pickedCandidateId: String?
+    var iPicked: Bool {
+        pickedLocally || (room.participants.first { $0.userId == myUserId }?.hasPicked ?? false)
+    }
+    var pickedCount: Int { room.participants.filter(\.hasPicked).count }
+
     /// Vote summary for the reveal, most yes first.
     var tallyRows: [(candidate: Candidate, yes: Int)] {
         guard let tally = room.tally, let deck else { return [] }
@@ -95,18 +107,19 @@ final class RoomSessionViewModel {
 
     private(set) var isPicking = false
 
-    /// The blind pick: first tap at the table wins; a 409 just means
-    /// someone else's tap got there first and their verdict is already
-    /// on its way over the socket.
+    /// Cast our one hidden pick (decision C). First cast is final;
+    /// everyone casts, plurality wins when the roster completes.
     func pick(_ candidate: Candidate) async {
-        guard !isPicking else { return }
+        guard !isPicking && !iPicked else { return }
         isPicking = true
         defer { isPicking = false }
+        pickedCandidateId = candidate.id
+        pickedLocally = true
         do {
             apply(try await api.pick(roomId: room.id, userId: myUserId, candidateId: candidate.id))
         } catch {
-            // Lost the race or the tie already resolved — the snapshot
-            // that explains it arrives over the socket.
+            // 409 = already picked (another device?) or the reveal is
+            // already decided — the socket explains either way.
         }
     }
 
