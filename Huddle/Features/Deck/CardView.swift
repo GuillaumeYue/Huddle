@@ -103,7 +103,7 @@ struct CardView: View {
     private var priceText: String? {
         candidate.metadata["priceLevel"]
             .flatMap(Int.init)
-            .map { String(repeating: "¥", count: max(1, min($0, 4))) }
+            .map { String(repeating: "$", count: max(1, min($0, 4))) }
     }
 
     private var distanceText: String? {

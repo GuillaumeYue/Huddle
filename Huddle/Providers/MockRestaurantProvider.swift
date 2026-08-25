@@ -9,7 +9,7 @@ import HuddleCore
 ///
 /// Metadata schema (provider ↔ card view contract):
 ///   cuisine        — human-readable label, e.g. "Sichuan"
-///   priceLevel     — "1"..."4", rendered as ¥...¥¥¥¥
+///   priceLevel     — "1"..."4", rendered as $...$$$$
 ///   rating         — "0.0"..."5.0"
 ///   distanceMeters — integer string, rendered as "800 m" / "1.2 km"
 struct MockRestaurantProvider: CandidateProvider {
