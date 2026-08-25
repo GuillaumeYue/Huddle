@@ -59,8 +59,9 @@ struct RoomSessionView: View {
         }
     }
 
-    /// The tie: every card here got everyone's yes. Face-down, tap one —
-    /// first tap at the table wins (the server's row decides).
+    /// The tie: every card here got everyone's yes. Everyone casts one
+    /// hidden pick; when the roster completes, plurality wins (decision
+    /// C — the server's row still makes the verdict exactly-once).
     private func blindPickStage(_ tied: [Candidate]) -> some View {
         VStack(spacing: 18) {
             Spacer(minLength: 8)
