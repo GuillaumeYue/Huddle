@@ -1,4 +1,5 @@
 import { dealDeck } from "./deck.js";
+import { enqueueProfileJobs } from "./reco/queue.js";
 import { pool } from "./db.js";
 import { redisPub } from "./redis.js";
 
@@ -196,6 +197,12 @@ export async function resolveReveal(
         [roomId]);
   if (rowCount !== 1) return "already";
   await broadcast(roomId);
+  // The room is settled: its swipes are final evidence. Queue profile
+  // rebuilds for the roster — the worker learns, the hot path doesn't.
+  const { rows: roster } = await pool.query<{ user_id: string }>(
+    "SELECT DISTINCT user_id FROM round_roster WHERE room_id = $1", [roomId]);
+  await enqueueProfileJobs(roster.map((r) => r.user_id)).catch((err) =>
+    console.error("[settle] enqueue failed:", err));
   return "resolved";
 }
 
