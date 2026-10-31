@@ -35,3 +35,7 @@ Secrets.xcconfig
 node_modules/
 dist/
 .env
+# Production secrets and certs
+.env.*
+!.env.example
+deploy/certs/
